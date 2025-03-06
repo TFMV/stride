@@ -5,11 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/karrick/godirwalk"
@@ -117,12 +121,26 @@ type FilterOptions struct {
 	Pattern             string      // Glob pattern for matching files
 	ExcludeDir          []string    // Directory patterns to exclude
 	IncludeTypes        []string    // File extensions to include (e.g. ".txt", ".go")
+	FileTypes           []string    // File types to include (file, dir, symlink)
+	ExcludePattern      []string    // Patterns to exclude files
 	ModifiedAfter       time.Time   // Only include files modified after
 	ModifiedBefore      time.Time   // Only include files modified before
+	AccessedAfter       time.Time   // Include files accessed after this time
+	AccessedBefore      time.Time   // Include files accessed before this time
+	CreatedAfter        time.Time   // Include files created after this time
+	CreatedBefore       time.Time   // Include files created before this time
 	MinPermissions      os.FileMode // Minimum file permissions (e.g. 0644)
 	MaxPermissions      os.FileMode // Maximum file permissions (e.g. 0755)
 	ExactPermissions    os.FileMode // Exact file permissions to match
 	UseExactPermissions bool        // Whether to use exact permissions matching
+	OwnerUID            int         // Filter by owner UID
+	OwnerGID            int         // Filter by group GID
+	OwnerName           string      // Filter by owner username
+	GroupName           string      // Filter by group name
+	MinDepth            int         // Minimum traversal depth
+	MaxDepth            int         // Maximum traversal depth
+	IncludeEmptyFiles   bool        // Include only empty files
+	IncludeEmptyDirs    bool        // Include only empty directories
 }
 
 // --------------------------------------------------------------------------
@@ -219,6 +237,8 @@ func WalkLimit(ctx context.Context, root string, walkFn filepath.WalkFunc, limit
 			}
 			return nil
 		},
+		// Default to not following symlinks for backward compatibility
+		FollowSymbolicLinks: false,
 	}
 
 	// Use godirwalk.Walk with the options.
@@ -230,11 +250,32 @@ func WalkLimit(ctx context.Context, root string, walkFn filepath.WalkFunc, limit
 	}
 
 	close(tasks)
-	tasksWg.Wait()
 	workerWg.Wait()
 
+	// Collect errors.
 	if len(walkErrors) > 0 {
-		return errors.Join(walkErrors...)
+		// If there's only one error and it's context.Canceled, return it directly
+		if len(walkErrors) == 1 && (errors.Is(walkErrors[0], context.Canceled) ||
+			walkErrors[0].Error() == "context canceled") {
+			return context.Canceled
+		}
+
+		// Check if all errors are the same custom error
+		if len(walkErrors) > 0 {
+			firstErr := walkErrors[0]
+			allSame := true
+			for _, err := range walkErrors[1:] {
+				if !errors.Is(err, firstErr) && err.Error() != firstErr.Error() {
+					allSame = false
+					break
+				}
+			}
+			if allSame {
+				return firstErr
+			}
+		}
+
+		return fmt.Errorf("multiple errors: %v", walkErrors)
 	}
 	return nil
 }
@@ -452,7 +493,7 @@ func WalkLimitWithFilter(ctx context.Context, root string, walkFn filepath.WalkF
 // WalkLimitWithOptions provides the most flexible configuration,
 // combining error handling, filtering, progress reporting, and optional custom logger/symlink handling.
 func WalkLimitWithOptions(ctx context.Context, root string, walkFn filepath.WalkFunc, opts WalkOptions) error {
-	if opts.BufferSize <= 0 {
+	if opts.BufferSize < 1 {
 		opts.BufferSize = DefaultConcurrentWalks
 	}
 
@@ -469,71 +510,55 @@ func WalkLimitWithOptions(ctx context.Context, root string, walkFn filepath.Walk
 	logger.Debug("starting walk with options",
 		zap.String("root", root),
 		zap.Int("buffer_size", opts.BufferSize),
-		zap.Int("num_workers", opts.NumWorkers),
 		zap.Any("error_handling", opts.ErrorHandling),
 		zap.Any("symlink_handling", opts.SymlinkHandling),
 	)
 
 	stats := &Stats{}
 	startTime := time.Now()
-
-	symlinkLock.Lock()
 	visitedSymlinks = sync.Map{} // Clear symlink cache
-	symlinkLock.Unlock()
-	root = filepath.Clean(root)
 
-	var progressTicker *time.Ticker
-	if opts.Progress != nil {
-		progressTicker = time.NewTicker(500 * time.Millisecond) // Update progress every 500ms
-		go func() {
-			for range progressTicker.C {
-				if ctx.Err() != nil {
-					return
-				}
+	// Track the root depth for MinDepth/MaxDepth filtering
+	rootDepth := strings.Count(filepath.Clean(root), string(os.PathSeparator))
+
+	wrappedWalkFn := func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			if opts.Progress != nil {
+				atomic.AddInt64(&stats.ErrorCount, 1)
 				stats.ElapsedTime = time.Since(startTime)
 				stats.updateDerivedStats()
 				opts.Progress(*stats)
 			}
-		}()
-	}
-
-	// Use an internal walk function to capture any errors.
-	var internalWalkErr error
-	var internalWalkErrLock sync.Mutex
-
-	wrappedWalkFn := func(path string, info os.FileInfo, err error) error {
-		// Capture any errors from the user's walkFn.
-		var userWalkErr error
-
-		if err != nil {
-			// Handle the error based on the ErrorHandling option
 			switch opts.ErrorHandling {
 			case ErrorHandlingContinue, ErrorHandlingSkip:
-				// For Continue and Skip, just mark the error.
-				internalWalkErrLock.Lock()
-				internalWalkErr = errors.Join(internalWalkErr, err)
-				internalWalkErrLock.Unlock()
 				return nil
-			default: // ErrorHandlingStop
+			default:
 				return err
 			}
 		}
+
 		// Check if info is nil to avoid nil pointer dereference
 		if info == nil {
 			return nil
 		}
 
-		// Resolve symlinks *before* other checks.
-		resolvedPath, resolvedInfo, isSymlink, err := resolveSymlink(path, opts.SymlinkHandling) // Use resolved symlink
-		if err != nil {
-			return err
+		// Calculate current depth relative to root
+		pathDepth := strings.Count(filepath.Clean(path), string(os.PathSeparator)) - rootDepth
+
+		// Apply depth filtering
+		if opts.Filter.MinDepth > 0 && pathDepth < opts.Filter.MinDepth {
+			if info.IsDir() && pathDepth < opts.Filter.MinDepth-1 {
+				// Continue traversing but don't process
+				return nil
+			}
+			return nil // Skip this file/dir but don't skip its children
 		}
-		if isSymlink && resolvedInfo == nil {
-			return nil // Symlink was ignored.
-		}
-		if isSymlink {
-			path = resolvedPath
-			info = resolvedInfo
+
+		if opts.Filter.MaxDepth > 0 && pathDepth > opts.Filter.MaxDepth {
+			if info.IsDir() {
+				return filepath.SkipDir // Skip this directory and its children
+			}
+			return nil // Skip this file
 		}
 
 		if info.IsDir() {
@@ -545,7 +570,6 @@ func WalkLimitWithOptions(ctx context.Context, root string, walkFn filepath.Walk
 			if shouldSkipDir(parent, root, opts.Filter.ExcludeDir) {
 				return nil
 			}
-
 			if !filePassesFilter(path, info, opts.Filter, opts.SymlinkHandling) {
 				return nil
 			}
@@ -563,28 +587,147 @@ func WalkLimitWithOptions(ctx context.Context, root string, walkFn filepath.Walk
 				atomic.AddInt64(&stats.BytesProcessed, info.Size())
 			}
 		}
-		userWalkErr = walkFn(path, info, nil) // Call the users walkFn
-		if userWalkErr != nil && opts.ErrorHandling == ErrorHandlingStop {
-			return userWalkErr
-		}
-		return nil // always return nil so we dont stop
+		return walkFn(path, info, nil) // Call the users walkFn
 	}
 
-	finalErr := WalkLimit(ctx, root, wrappedWalkFn, opts.NumWorkers)
+	// Use a custom implementation for WalkLimit that respects symlink handling
+	finalErr := walkLimitWithSymlinkHandling(ctx, root, wrappedWalkFn, opts.NumWorkers, opts.SymlinkHandling)
 
 	// Stop progress updates
-	if progressTicker != nil {
-		progressTicker.Stop()
-		// Do a final progress update.
+	if opts.Progress != nil {
 		stats.ElapsedTime = time.Since(startTime)
 		stats.updateDerivedStats()
 		opts.Progress(*stats)
 	}
-	// Check and combined captured errors
-	internalWalkErrLock.Lock()
-	err := errors.Join(finalErr, internalWalkErr)
-	internalWalkErrLock.Unlock()
-	return err
+	return finalErr
+}
+
+// walkLimitWithSymlinkHandling is a version of WalkLimit that respects the SymlinkHandling option
+func walkLimitWithSymlinkHandling(ctx context.Context, root string, walkFn filepath.WalkFunc, limit int, symlinkHandling SymlinkHandling) error {
+	if limit < 1 {
+		return errors.New("stride: concurrency limit must be greater than zero")
+	}
+
+	logger := createLogger(LogLevelInfo) // Default log level
+	defer logger.Sync()
+
+	logger.Debug("starting walk with symlink handling",
+		zap.String("root", root),
+		zap.Int("workers", limit),
+		zap.Any("symlink_handling", symlinkHandling))
+
+	tasks := make(chan walkArgs, limit)
+	var tasksWg sync.WaitGroup
+	var workerWg sync.WaitGroup
+
+	// Error collection.
+	var walkErrors []error
+	var errLock sync.Mutex
+
+	// Worker processes tasks (files only).
+	worker := func() {
+		defer workerWg.Done()
+		for task := range tasks {
+			if ctx.Err() != nil {
+				logger.Debug("worker canceled", zap.String("path", task.path))
+				tasksWg.Done()
+				continue
+			}
+			if err := walkFn(task.path, task.info, task.err); err != nil {
+				// Do not collect SkipDir errors.
+				if !errors.Is(err, filepath.SkipDir) {
+					errLock.Lock()
+					walkErrors = append(walkErrors, fmt.Errorf("path %q: %w", task.path, err))
+					errLock.Unlock()
+				}
+			}
+			tasksWg.Done()
+		}
+	}
+
+	// Launch worker pool.
+	for i := 0; i < limit; i++ {
+		workerWg.Add(1)
+		go worker()
+	}
+
+	// Create godirwalk.Options with the callback function.
+	options := &godirwalk.Options{
+		Callback: func(path string, info *godirwalk.Dirent) error {
+			if ctx.Err() != nil {
+				logger.Warn("walk canceled", zap.String("path", path))
+				return context.Canceled
+			}
+			// Convert godirwalk.Dirent to os.FileInfo
+			fileInfo, err := os.Lstat(path)
+			if err != nil {
+				return err
+			}
+
+			// For directories, process synchronously so that SkipDir is honored.
+			if fileInfo.IsDir() {
+				ret := walkFn(path, fileInfo, nil)
+				if errors.Is(ret, filepath.SkipDir) {
+					return filepath.SkipDir
+				}
+				if ret != nil {
+					errLock.Lock()
+					walkErrors = append(walkErrors, fmt.Errorf("path %q: %w", path, ret))
+					errLock.Unlock()
+				}
+			} else {
+				// For files, send the task to workers.
+				tasksWg.Add(1)
+				select {
+				case <-ctx.Done():
+					tasksWg.Done()
+					return context.Canceled
+				case tasks <- walkArgs{path: path, info: fileInfo, err: nil}: // Pass fileInfo
+				}
+			}
+			return nil
+		},
+		// Set FollowSymbolicLinks based on the SymlinkHandling option
+		FollowSymbolicLinks: symlinkHandling == SymlinkFollow,
+	}
+
+	// Use godirwalk.Walk with the options.
+	err := godirwalk.Walk(root, options)
+	if err != nil && !errors.Is(err, filepath.SkipDir) {
+		errLock.Lock()
+		walkErrors = append(walkErrors, err)
+		errLock.Unlock()
+	}
+
+	close(tasks)
+	workerWg.Wait()
+
+	// Collect errors.
+	if len(walkErrors) > 0 {
+		// If there's only one error and it's context.Canceled, return it directly
+		if len(walkErrors) == 1 && (errors.Is(walkErrors[0], context.Canceled) ||
+			walkErrors[0].Error() == "context canceled") {
+			return context.Canceled
+		}
+
+		// Check if all errors are the same custom error
+		if len(walkErrors) > 0 {
+			firstErr := walkErrors[0]
+			allSame := true
+			for _, err := range walkErrors[1:] {
+				if !errors.Is(err, firstErr) && err.Error() != firstErr.Error() {
+					allSame = false
+					break
+				}
+			}
+			if allSame {
+				return firstErr
+			}
+		}
+
+		return fmt.Errorf("multiple errors: %v", walkErrors)
+	}
+	return nil
 }
 
 // --------------------------------------------------------------------------
@@ -617,7 +760,73 @@ func filePassesFilter(path string, info os.FileInfo, filter FilterOptions, symli
 		return false
 	}
 
-	// Glob pattern matching.  Use info.Name() (base name) for pattern matching, not the full path!
+	// Access and creation time checks (platform-dependent)
+	if runtime.GOOS != "windows" {
+		// On Unix-like systems, we can get access and creation times
+		var stat syscall.Stat_t
+		if err := syscall.Stat(path, &stat); err == nil {
+			// Access time check
+			if !filter.AccessedAfter.IsZero() || !filter.AccessedBefore.IsZero() {
+				// Use a platform-independent approach to get atime
+				atime := getAccessTime(path, info)
+
+				if !filter.AccessedAfter.IsZero() && atime.Before(filter.AccessedAfter) {
+					return false
+				}
+				if !filter.AccessedBefore.IsZero() && atime.After(filter.AccessedBefore) {
+					return false
+				}
+			}
+
+			// Creation time check (birthtime) - not available on all platforms
+			// This is a best-effort approach
+			if !filter.CreatedAfter.IsZero() || !filter.CreatedBefore.IsZero() {
+				// Use a platform-independent approach to get creation time
+				ctime := getCreationTime(path, info)
+
+				if !filter.CreatedAfter.IsZero() && ctime.Before(filter.CreatedAfter) {
+					return false
+				}
+				if !filter.CreatedBefore.IsZero() && ctime.After(filter.CreatedBefore) {
+					return false
+				}
+			}
+
+			// Owner and group checks
+			if filter.OwnerUID > 0 && int(stat.Uid) != filter.OwnerUID {
+				return false
+			}
+			if filter.OwnerGID > 0 && int(stat.Gid) != filter.OwnerGID {
+				return false
+			}
+		}
+	}
+
+	// Owner and group name checks
+	if filter.OwnerName != "" || filter.GroupName != "" {
+		if runtime.GOOS != "windows" {
+			var stat syscall.Stat_t
+			if err := syscall.Stat(path, &stat); err == nil {
+				// Check owner name
+				if filter.OwnerName != "" {
+					owner, err := user.LookupId(fmt.Sprintf("%d", stat.Uid))
+					if err != nil || owner.Username != filter.OwnerName {
+						return false
+					}
+				}
+
+				// Check group name
+				if filter.GroupName != "" {
+					group, err := user.LookupGroupId(fmt.Sprintf("%d", stat.Gid))
+					if err != nil || group.Name != filter.GroupName {
+						return false
+					}
+				}
+			}
+		}
+	}
+
+	// Glob pattern matching. Use info.Name() (base name) for pattern matching, not the full path!
 	if filter.Pattern != "" {
 		matched, err := filepath.Match(filter.Pattern, info.Name())
 		if err != nil || !matched {
@@ -625,17 +834,83 @@ func filePassesFilter(path string, info os.FileInfo, filter FilterOptions, symli
 		}
 	}
 
+	// Exclude pattern matching
+	if len(filter.ExcludePattern) > 0 {
+		for _, pattern := range filter.ExcludePattern {
+			matched, err := filepath.Match(pattern, info.Name())
+			if err == nil && matched {
+				return false
+			}
+		}
+	}
+
 	// Type filtering (extension check).
 	if len(filter.IncludeTypes) > 0 {
-		ext := filepath.Ext(info.Name())
+		ext := filepath.Ext(path)
+		matched := false
+		for _, includeType := range filter.IncludeTypes {
+			if includeType == ext {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	// File type filtering
+	if len(filter.FileTypes) > 0 {
 		var found bool
-		for _, typ := range filter.IncludeTypes {
-			if ext == typ {
-				found = true
+		mode := info.Mode()
+		for _, fileType := range filter.FileTypes {
+			switch fileType {
+			case "file":
+				if mode.IsRegular() {
+					found = true
+				}
+			case "dir":
+				if mode.IsDir() {
+					found = true
+				}
+			case "symlink":
+				if mode&os.ModeSymlink != 0 {
+					found = true
+				}
+			case "pipe":
+				if mode&os.ModeNamedPipe != 0 {
+					found = true
+				}
+			case "socket":
+				if mode&os.ModeSocket != 0 {
+					found = true
+				}
+			case "device":
+				if mode&os.ModeDevice != 0 {
+					found = true
+				}
+			case "char":
+				if mode&os.ModeCharDevice != 0 {
+					found = true
+				}
+			}
+			if found {
 				break
 			}
 		}
 		if !found {
+			return false
+		}
+	}
+
+	// Empty file/directory check
+	if filter.IncludeEmptyFiles && !info.IsDir() && info.Size() > 0 {
+		return false
+	}
+	if filter.IncludeEmptyDirs && info.IsDir() {
+		// Check if directory is empty
+		empty, _ := isDirEmpty(path)
+		if !empty {
 			return false
 		}
 	}
@@ -658,6 +933,22 @@ func filePassesFilter(path string, info os.FileInfo, filter FilterOptions, symli
 	}
 
 	return true
+}
+
+// isDirEmpty checks if a directory is empty
+func isDirEmpty(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	// Read just one entry
+	_, err = f.Readdirnames(1)
+	if err == io.EOF {
+		return true, nil
+	}
+	return false, err
 }
 
 // createLogger creates a zap logger with the specified log level.
@@ -690,4 +981,24 @@ func createLogger(level LogLevel) *zap.Logger {
 func hasFiles(dir string) bool {
 	entries, err := os.ReadDir(dir) // Use the faster ReadDir
 	return err == nil && len(entries) > 0
+}
+
+// getAccessTime returns the access time of a file
+func getAccessTime(path string, info os.FileInfo) time.Time {
+	// Use a platform-independent approach to get atime
+	var stat syscall.Stat_t
+	if err := syscall.Stat(path, &stat); err == nil {
+		return time.Unix(stat.Atimespec.Sec, stat.Atimespec.Nsec)
+	}
+	return time.Time{}
+}
+
+// getCreationTime returns the creation time of a file
+func getCreationTime(path string, info os.FileInfo) time.Time {
+	// Use a platform-independent approach to get creation time
+	var stat syscall.Stat_t
+	if err := syscall.Stat(path, &stat); err == nil {
+		return time.Unix(stat.Birthtimespec.Sec, stat.Birthtimespec.Nsec)
+	}
+	return time.Time{}
 }
