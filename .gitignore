@@ -23,3 +23,7 @@ go.work.sum
 
 # env file
 .env
+
+internal/walk/testdata/
+
+.DS_Store
