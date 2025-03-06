@@ -51,12 +51,28 @@ func init() {
 	rootCmd.Flags().String("max-size", "", "Maximum file size to process")
 	rootCmd.Flags().String("pattern", "", "File pattern to match")
 	rootCmd.Flags().String("exclude-dir", "", "Directories to exclude (comma-separated)")
+	rootCmd.Flags().String("exclude-pattern", "", "Patterns to exclude files (comma-separated)")
+	rootCmd.Flags().String("file-types", "", "File types to include (comma-separated: file,dir,symlink,pipe,socket,device,char)")
 	rootCmd.Flags().Bool("follow-symlinks", false, "Follow symbolic links")
 	rootCmd.Flags().Bool("progress", false, "Show progress updates")
 	rootCmd.Flags().String("error-mode", "continue", "Error handling mode (continue|stop|skip)")
 	rootCmd.Flags().String("min-permissions", "", "Minimum file permissions (octal, e.g. 0644)")
 	rootCmd.Flags().String("max-permissions", "", "Maximum file permissions (octal, e.g. 0755)")
 	rootCmd.Flags().String("exact-permissions", "", "Exact file permissions to match (octal, e.g. 0644)")
+	rootCmd.Flags().String("owner", "", "Filter by owner username")
+	rootCmd.Flags().String("group", "", "Filter by group name")
+	rootCmd.Flags().Int("owner-uid", 0, "Filter by owner UID")
+	rootCmd.Flags().Int("owner-gid", 0, "Filter by group GID")
+	rootCmd.Flags().Int("min-depth", 0, "Minimum directory depth to process")
+	rootCmd.Flags().Int("max-depth", 0, "Maximum directory depth to process")
+	rootCmd.Flags().Bool("empty-files", false, "Include only empty files")
+	rootCmd.Flags().Bool("empty-dirs", false, "Include only empty directories")
+	rootCmd.Flags().String("modified-after", "", "Include files modified after (format: YYYY-MM-DD)")
+	rootCmd.Flags().String("modified-before", "", "Include files modified before (format: YYYY-MM-DD)")
+	rootCmd.Flags().String("accessed-after", "", "Include files accessed after (format: YYYY-MM-DD)")
+	rootCmd.Flags().String("accessed-before", "", "Include files accessed before (format: YYYY-MM-DD)")
+	rootCmd.Flags().String("created-after", "", "Include files created after (format: YYYY-MM-DD)")
+	rootCmd.Flags().String("created-before", "", "Include files created before (format: YYYY-MM-DD)")
 
 	// Bind flags to viper
 	viper.BindPFlag("workers", rootCmd.Flags().Lookup("workers"))
@@ -67,12 +83,28 @@ func init() {
 	viper.BindPFlag("max-size", rootCmd.Flags().Lookup("max-size"))
 	viper.BindPFlag("pattern", rootCmd.Flags().Lookup("pattern"))
 	viper.BindPFlag("exclude-dir", rootCmd.Flags().Lookup("exclude-dir"))
+	viper.BindPFlag("exclude-pattern", rootCmd.Flags().Lookup("exclude-pattern"))
+	viper.BindPFlag("file-types", rootCmd.Flags().Lookup("file-types"))
 	viper.BindPFlag("follow-symlinks", rootCmd.Flags().Lookup("follow-symlinks"))
 	viper.BindPFlag("progress", rootCmd.Flags().Lookup("progress"))
 	viper.BindPFlag("error-mode", rootCmd.Flags().Lookup("error-mode"))
 	viper.BindPFlag("min-permissions", rootCmd.Flags().Lookup("min-permissions"))
 	viper.BindPFlag("max-permissions", rootCmd.Flags().Lookup("max-permissions"))
 	viper.BindPFlag("exact-permissions", rootCmd.Flags().Lookup("exact-permissions"))
+	viper.BindPFlag("owner", rootCmd.Flags().Lookup("owner"))
+	viper.BindPFlag("group", rootCmd.Flags().Lookup("group"))
+	viper.BindPFlag("owner-uid", rootCmd.Flags().Lookup("owner-uid"))
+	viper.BindPFlag("owner-gid", rootCmd.Flags().Lookup("owner-gid"))
+	viper.BindPFlag("min-depth", rootCmd.Flags().Lookup("min-depth"))
+	viper.BindPFlag("max-depth", rootCmd.Flags().Lookup("max-depth"))
+	viper.BindPFlag("empty-files", rootCmd.Flags().Lookup("empty-files"))
+	viper.BindPFlag("empty-dirs", rootCmd.Flags().Lookup("empty-dirs"))
+	viper.BindPFlag("modified-after", rootCmd.Flags().Lookup("modified-after"))
+	viper.BindPFlag("modified-before", rootCmd.Flags().Lookup("modified-before"))
+	viper.BindPFlag("accessed-after", rootCmd.Flags().Lookup("accessed-after"))
+	viper.BindPFlag("accessed-before", rootCmd.Flags().Lookup("accessed-before"))
+	viper.BindPFlag("created-after", rootCmd.Flags().Lookup("created-after"))
+	viper.BindPFlag("created-before", rootCmd.Flags().Lookup("created-before"))
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -143,6 +175,16 @@ func runFileWalker(root string) error {
 		filter.ExcludeDir = strings.Split(excludeDirs, ",")
 	}
 
+	// Set exclude patterns
+	if excludePatterns := viper.GetString("exclude-pattern"); excludePatterns != "" {
+		filter.ExcludePattern = strings.Split(excludePatterns, ",")
+	}
+
+	// Set file types
+	if fileTypes := viper.GetString("file-types"); fileTypes != "" {
+		filter.FileTypes = strings.Split(fileTypes, ",")
+	}
+
 	// Parse permission filters
 	if minPermStr := viper.GetString("min-permissions"); minPermStr != "" {
 		// Parse octal string to int64
@@ -170,6 +212,96 @@ func runFileWalker(root string) error {
 		}
 		filter.ExactPermissions = os.FileMode(exactPerm)
 		filter.UseExactPermissions = true
+	}
+
+	// Parse owner filter
+	if owner := viper.GetString("owner"); owner != "" {
+		filter.OwnerName = owner
+	}
+
+	// Parse group filter
+	if group := viper.GetString("group"); group != "" {
+		filter.GroupName = group
+	}
+
+	// Parse owner UID filter
+	if ownerUID := viper.GetInt("owner-uid"); ownerUID != 0 {
+		filter.OwnerUID = ownerUID
+	}
+
+	// Parse owner GID filter
+	if ownerGID := viper.GetInt("owner-gid"); ownerGID != 0 {
+		filter.OwnerGID = ownerGID
+	}
+
+	// Parse directory depth filters
+	if minDepth := viper.GetInt("min-depth"); minDepth != 0 {
+		filter.MinDepth = minDepth
+	}
+
+	if maxDepth := viper.GetInt("max-depth"); maxDepth != 0 {
+		filter.MaxDepth = maxDepth
+	}
+
+	// Parse empty files filter
+	if viper.GetBool("empty-files") {
+		filter.IncludeEmptyFiles = true
+	}
+
+	// Parse empty directories filter
+	if viper.GetBool("empty-dirs") {
+		filter.IncludeEmptyDirs = true
+	}
+
+	// Parse modified time filters
+	if modifiedAfter := viper.GetString("modified-after"); modifiedAfter != "" {
+		modifiedAfterTime, err := time.Parse("2006-01-02", modifiedAfter)
+		if err != nil {
+			return fmt.Errorf("invalid modified-after format: %s", modifiedAfter)
+		}
+		filter.ModifiedAfter = modifiedAfterTime
+	}
+
+	if modifiedBefore := viper.GetString("modified-before"); modifiedBefore != "" {
+		modifiedBeforeTime, err := time.Parse("2006-01-02", modifiedBefore)
+		if err != nil {
+			return fmt.Errorf("invalid modified-before format: %s", modifiedBefore)
+		}
+		filter.ModifiedBefore = modifiedBeforeTime
+	}
+
+	// Parse accessed time filters
+	if accessedAfter := viper.GetString("accessed-after"); accessedAfter != "" {
+		accessedAfterTime, err := time.Parse("2006-01-02", accessedAfter)
+		if err != nil {
+			return fmt.Errorf("invalid accessed-after format: %s", accessedAfter)
+		}
+		filter.AccessedAfter = accessedAfterTime
+	}
+
+	if accessedBefore := viper.GetString("accessed-before"); accessedBefore != "" {
+		accessedBeforeTime, err := time.Parse("2006-01-02", accessedBefore)
+		if err != nil {
+			return fmt.Errorf("invalid accessed-before format: %s", accessedBefore)
+		}
+		filter.AccessedBefore = accessedBeforeTime
+	}
+
+	// Parse created time filters
+	if createdAfter := viper.GetString("created-after"); createdAfter != "" {
+		createdAfterTime, err := time.Parse("2006-01-02", createdAfter)
+		if err != nil {
+			return fmt.Errorf("invalid created-after format: %s", createdAfter)
+		}
+		filter.CreatedAfter = createdAfterTime
+	}
+
+	if createdBefore := viper.GetString("created-before"); createdBefore != "" {
+		createdBeforeTime, err := time.Parse("2006-01-02", createdBefore)
+		if err != nil {
+			return fmt.Errorf("invalid created-before format: %s", createdBefore)
+		}
+		filter.CreatedBefore = createdBeforeTime
 	}
 
 	// Create walk options

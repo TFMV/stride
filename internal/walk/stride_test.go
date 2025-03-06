@@ -173,8 +173,9 @@ func TestWalkLimitWithOptions(t *testing.T) {
 		t.Fatalf("WalkLimitWithOptions failed: %v", err)
 	}
 
-	// We expect 2 .txt files
-	expectedTxtFiles := int32(2)
+	// We expect 4 .txt files when following symlinks (2 original + 2 through symlink)
+	// This is because symlink_dir points to dir1, which contains .txt files
+	expectedTxtFiles := int32(4)
 	if txtFilesCount != expectedTxtFiles {
 		t.Errorf("Expected %d .txt files, got %d", expectedTxtFiles, txtFilesCount)
 	}

@@ -71,16 +71,42 @@ func main() {
 
 ```go
 filter := stride.FilterOptions{
+    // Basic filtering
     MinSize:      1024,                // Skip files smaller than 1KB
     MaxSize:      1024 * 1024 * 10,    // Skip files larger than 10MB
+    Pattern:      "*.log",             // Match files using glob pattern
+    ExcludePattern: []string{"*.tmp"}, // Exclude files matching these patterns
     IncludeTypes: []string{".go", ".md"}, // Only process Go and Markdown files
     ExcludeDir:   []string{"vendor", "node_modules"}, // Skip these directories
-    ModifiedAfter: time.Now().Add(-24 * time.Hour), // Only files modified in the last 24 hours
+    
+    // Time-based filtering
+    ModifiedAfter:  time.Now().Add(-24 * time.Hour), // Only files modified in the last 24 hours
+    ModifiedBefore: time.Now().Add(-1 * time.Hour),  // Only files modified before the last hour
+    AccessedAfter:  time.Now().Add(-7 * 24 * time.Hour), // Files accessed in the last week
+    CreatedAfter:   time.Now().Add(-30 * 24 * time.Hour), // Files created in the last month
+    
+    // Permission filtering
     MinPermissions: 0644,              // Files must be at least readable by owner and group
     MaxPermissions: 0755,              // Files must not have more permissions than rwxr-xr-x
-    // Alternatively, use exact permission matching:
-    // ExactPermissions: 0644,         // Match files with exactly these permissions
-    // UseExactPermissions: true,      // Enable exact permission matching
+    ExactPermissions: 0644,            // Match files with exactly these permissions
+    UseExactPermissions: true,         // Enable exact permission matching
+    
+    // Owner/Group filtering
+    OwnerUID:  1000,                   // Filter by owner UID
+    OwnerGID:  1000,                   // Filter by group GID
+    OwnerName: "username",             // Filter by owner username
+    GroupName: "groupname",            // Filter by group name
+    
+    // File type filtering
+    FileTypes: []string{"file", "dir", "symlink"}, // Only include these file types
+    
+    // Depth control
+    MinDepth: 1,                       // Skip the root directory
+    MaxDepth: 3,                       // Don't go deeper than 3 levels
+    
+    // Empty files/directories
+    IncludeEmptyFiles: true,           // Only include empty files
+    IncludeEmptyDirs: true,            // Only include empty directories
 }
 
 err := stride.WalkLimitWithFilter(ctx, ".", func(path string, info os.FileInfo, err error) error {
@@ -134,6 +160,31 @@ err := stride.WalkLimitWithOptions(ctx, ".", func(path string, info os.FileInfo,
 }, opts)
 ```
 
+### Symlink Handling
+
+Stride provides robust symlink handling capabilities with three modes:
+
+- **SymlinkIgnore**: Ignores symbolic links during traversal (default)
+- **SymlinkFollow**: Follows symbolic links, including during directory traversal
+- **SymlinkReport**: Reports symbolic links but doesn't follow them
+
+When following symlinks, Stride includes cycle detection to prevent infinite loops:
+
+```go
+opts := stride.WalkOptions{
+    SymlinkHandling: stride.SymlinkFollow, // Follow symbolic links
+    // Other options...
+}
+
+err := stride.WalkLimitWithOptions(ctx, root, walkFn, opts)
+```
+
+From the command line:
+
+```bash
+stride --follow-symlinks /path/to/directory
+```
+
 ## Command Line Tool
 
 Stride includes a powerful CLI tool for quick and efficient filesystem traversal.
@@ -156,20 +207,68 @@ stride --exact-permissions=0644 /path/to/directory
 ### Available Options
 
 ```bash
---error-mode string       Error handling mode (continue|stop|skip) [default: continue]
+# Basic filtering
+--pattern string           File pattern to match
+--exclude-pattern string   Patterns to exclude files (comma-separated)
+--exclude-dir string       Directories to exclude (comma-separated)
+--min-size string          Minimum file size to process
+--max-size string          Maximum file size to process
+--file-types string        File types to include (comma-separated: file,dir,symlink,pipe,socket,device,char)
+
+# Time-based filtering
+--modified-after string    Include files modified after (format: YYYY-MM-DD)
+--modified-before string   Include files modified before (format: YYYY-MM-DD)
+--accessed-after string    Include files accessed after (format: YYYY-MM-DD)
+--accessed-before string   Include files accessed before (format: YYYY-MM-DD)
+--created-after string     Include files created after (format: YYYY-MM-DD)
+--created-before string    Include files created before (format: YYYY-MM-DD)
+
+# Permission filtering
+--min-permissions string   Minimum file permissions (octal, e.g. 0644)
+--max-permissions string   Maximum file permissions (octal, e.g. 0755)
 --exact-permissions string Exact file permissions to match (octal, e.g. 0644)
---exclude-dir string      Directories to exclude (comma-separated)
---follow-symlinks         Follow symbolic links [default: false]
---format string           Output format (text|json) [default: text]
---max-permissions string  Maximum file permissions (octal, e.g. 0755)
---max-size string         Maximum file size to process
---min-permissions string  Minimum file permissions (octal, e.g. 0644)
---min-size string         Minimum file size to process
---pattern string          File pattern to match
---progress                Show progress updates
---silent                  Disable all output except errors
--v, --verbose             Enable verbose logging
--w, --workers string      Number of concurrent workers [default: 4]
+
+# Owner/Group filtering
+--owner string             Filter by owner username
+--group string             Filter by group name
+--owner-uid int            Filter by owner UID
+--owner-gid int            Filter by group GID
+
+# Depth control
+--min-depth int            Minimum directory depth to process
+--max-depth int            Maximum directory depth to process
+
+# Empty files/directories
+--empty-files              Include only empty files
+--empty-dirs               Include only empty directories
+
+# Processing options
+--error-mode string        Error handling mode (continue|stop|skip) [default: continue]
+--follow-symlinks          Follow symbolic links [default: false]
+--format string            Output format (text|json) [default: text]
+--progress                 Show progress updates
+--silent                   Disable all output except errors
+-v, --verbose              Enable verbose logging
+-w, --workers string       Number of concurrent workers [default: 4]
+```
+
+### Examples
+
+```bash
+# Find all Go files modified in the last week
+stride --file-types=file --pattern="*.go" --modified-after=2023-05-01 /path/to/directory
+
+# Find all empty directories
+stride --file-types=dir --empty-dirs /path/to/directory
+
+# Find all executable files owned by current user
+stride --min-permissions=0755 --owner=$(whoami) /path/to/directory
+
+# Find large files (>100MB) not accessed in the last month
+stride --min-size=104857600 --accessed-before=$(date -d "30 days ago" +%Y-%m-%d) /path/to/directory
+
+# Find all files at depth 2-3 with specific permissions
+stride --min-depth=2 --max-depth=3 --exact-permissions=0644 /path/to/directory
 ```
 
 ## Architecture
