@@ -134,6 +134,44 @@ err := stride.WalkLimitWithOptions(ctx, ".", func(path string, info os.FileInfo,
 }, opts)
 ```
 
+## Command Line Tool
+
+Stride includes a powerful CLI tool for quick and efficient filesystem traversal.
+
+```bash
+# Install the command-line tool
+go install github.com/TFMV/stride@latest
+
+# Basic usage
+stride /path/to/directory
+
+# With options
+stride --workers=8 --pattern="*.go" --exclude-dir="vendor,node_modules" --progress /path/to/directory
+
+# With permission filtering
+stride --min-permissions=0644 --max-permissions=0755 /path/to/directory
+stride --exact-permissions=0644 /path/to/directory
+```
+
+### Available Options
+
+```bash
+--error-mode string       Error handling mode (continue|stop|skip) [default: continue]
+--exact-permissions string Exact file permissions to match (octal, e.g. 0644)
+--exclude-dir string      Directories to exclude (comma-separated)
+--follow-symlinks         Follow symbolic links [default: false]
+--format string           Output format (text|json) [default: text]
+--max-permissions string  Maximum file permissions (octal, e.g. 0755)
+--max-size string         Maximum file size to process
+--min-permissions string  Minimum file permissions (octal, e.g. 0644)
+--min-size string         Minimum file size to process
+--pattern string          File pattern to match
+--progress                Show progress updates
+--silent                  Disable all output except errors
+-v, --verbose             Enable verbose logging
+-w, --workers string      Number of concurrent workers [default: 4]
+```
+
 ## Architecture
 
 ```mermaid
@@ -347,21 +385,6 @@ Run benchmarks with:
 
 ```bash
 go test -bench=. -benchmem ./...
-```
-
-## Command Line Tool
-
-Stride includes a command-line tool for file traversal:
-
-```bash
-# Install the command-line tool
-go install github.com/TFMV/stride/cmd/filewalker@latest
-
-# Basic usage
-filewalker /path/to/directory
-
-# With options
-filewalker --workers=8 --pattern="*.go" --exclude-dir="vendor,node_modules" --progress /path/to/directory
 ```
 
 ## License
