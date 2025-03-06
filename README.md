@@ -160,6 +160,192 @@ err := stride.WalkLimitWithOptions(ctx, ".", func(path string, info os.FileInfo,
 }, opts)
 ```
 
+## Enhanced API
+
+Stride offers an enhanced API with context-aware callbacks, comprehensive configuration options, and middleware support.
+
+### Context-Aware Processing Function
+
+The new API provides a context-aware processing function signature:
+
+```go
+// WalkFunc defines the signature for file processing callbacks.
+type WalkFunc func(ctx context.Context, path string, info os.FileInfo) error
+```
+
+This allows for cancellation, timeouts, and passing values through context.
+
+### Extended Function with Statistics
+
+For advanced use cases, an extended callback provides access to traversal statistics:
+
+```go
+// AdvancedWalkFunc includes statistics for each callback.
+type AdvancedWalkFunc func(ctx context.Context, path string, info os.FileInfo, stats Stats) error
+```
+
+### Comprehensive Options Structure
+
+All configuration options are encapsulated in a cohesive structure:
+
+```go
+type WalkOptions struct {
+    Context           context.Context
+    Filter            FilterOptions
+    Logger            *zap.Logger
+    WorkerCount       int
+    ErrorHandlingMode ErrorHandlingMode
+    ProgressCallback  func(stats Stats)
+    MemoryLimits      MemoryLimitOptions
+    DryRun            bool
+    Middleware        []MiddlewareFunc
+}
+```
+
+### Error Handling Mode
+
+Error handling is now expressed as an enum with clear semantic values:
+
+```go
+type ErrorHandlingMode string
+
+const (
+    ContinueOnError ErrorHandlingMode = "continue"
+    StopOnError     ErrorHandlingMode = "stop"
+    SkipOnError     ErrorHandlingMode = "skip"
+)
+```
+
+### Middleware Support
+
+The new API supports middleware functions for adding cross-cutting concerns:
+
+```go
+type MiddlewareFunc func(next WalkFunc) WalkFunc
+```
+
+### Middleware Extensibility
+
+The enhanced API supports middleware patterns for cross-cutting concerns like logging, metrics, and timing:
+
+```go
+// Create a logging middleware
+func LoggingMiddleware(logger *zap.Logger) stride.MiddlewareFunc {
+    return func(next stride.WalkFunc) stride.WalkFunc {
+        return func(ctx context.Context, path string, info os.FileInfo) error {
+            logger.Debug("Processing file", zap.String("path", path))
+            err := next(ctx, path, info)
+            if err != nil {
+                logger.Error("Error processing file", zap.String("path", path), zap.Error(err))
+            }
+            return err
+        }
+    }
+}
+
+// Create a timing middleware
+func TimingMiddleware(metrics MetricsService) stride.MiddlewareFunc {
+    return func(next stride.WalkFunc) stride.WalkFunc {
+        return func(ctx context.Context, path string, info os.FileInfo) error {
+            start := time.Now()
+            err := next(ctx, path, info)
+            duration := time.Since(start)
+            metrics.RecordDuration(path, duration)
+            return err
+        }
+    }
+}
+
+// Apply middlewares in sequence
+opts := stride.WalkOptions{
+    Context: ctx,
+    Middleware: []stride.MiddlewareFunc{
+        LoggingMiddleware(logger),     // Will execute first (outer wrapper)
+        TimingMiddleware(metrics),     // Will execute second (inner wrapper)
+        RateLimitingMiddleware(limiter), // Will execute third (innermost)
+    },
+}
+```
+
+Middleware functions are applied in order, with each function wrapping the next one. This creates a pipeline where:
+
+1. The first middleware is the outermost wrapper and runs first before calling the next function
+2. The last middleware is the innermost wrapper and runs last, right before the actual file processing
+
+This pattern allows for clean separation of concerns, making your file processing code focus on its primary responsibility while cross-cutting concerns are handled separately.
+
+### Examples
+
+#### Simple Example
+
+```go
+opts := stride.WalkOptions{
+    Context:     context.Background(),
+    WorkerCount: 4,
+}
+
+err := stride.WalkWithOptions(".", func(ctx context.Context, path string, info os.FileInfo) error {
+    fmt.Println(path)
+    return nil
+}, opts)
+```
+
+#### Advanced Example with Filtering & Progress
+
+```go
+opts := stride.WalkOptions{
+    Context:     context.Background(),
+    WorkerCount: 8,
+    Filter: stride.FilterOptions{
+        Pattern: "*.log",
+        MinSize: 1024,
+    },
+    ProgressCallback: func(stats stride.Stats) {
+        fmt.Printf("\rProcessed: %d files, %.2f MB at %.2f MB/s",
+            stats.FilesProcessed,
+            float64(stats.BytesProcessed)/(1024*1024),
+            stats.SpeedMBPerSec,
+        )
+    },
+}
+
+err := stride.WalkWithOptions(".", func(ctx context.Context, path string, info os.FileInfo) error {
+    // Custom processing logic
+    processFile(path)
+    return nil
+}, opts)
+```
+
+#### Using Middleware
+
+```go
+// Define a logging middleware
+func LoggingMiddleware(logger *zap.Logger) stride.MiddlewareFunc {
+    return func(next stride.WalkFunc) stride.WalkFunc {
+        return func(ctx context.Context, path string, info os.FileInfo) error {
+            logger.Debug("Processing file", zap.String("path", path))
+            err := next(ctx, path, info)
+            if err != nil {
+                logger.Error("Error processing file", zap.String("path", path), zap.Error(err))
+            }
+            return err
+        }
+    }
+}
+
+// Use the middleware
+opts := stride.WalkOptions{
+    Context: context.Background(),
+    Middleware: []stride.MiddlewareFunc{
+        LoggingMiddleware(zapLogger),
+    },
+}
+
+err := stride.WalkWithOptions(".", func(ctx context.Context, path string, info os.FileInfo) error {
+    return processFile(path)
+}, opts)
+```
+
 ### Symlink Handling
 
 Stride provides robust symlink handling capabilities with three modes:

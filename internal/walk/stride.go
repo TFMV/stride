@@ -103,15 +103,33 @@ const (
 
 // WalkOptions provides comprehensive configuration for the walk operation.
 type WalkOptions struct {
-	ErrorHandling   ErrorHandling
-	Filter          FilterOptions
-	Progress        ProgressFn
-	Logger          *zap.Logger
-	LogLevel        LogLevel // New field for logging verbosity
-	BufferSize      int
-	SymlinkHandling SymlinkHandling
-	MemoryLimit     MemoryLimit // No-op in this implementation, but included for future expansion
-	NumWorkers      int         // Explicit worker count.
+	// Core options
+	Context           context.Context   // Context for cancellation and deadlines
+	ErrorHandling     ErrorHandling     // Legacy error handling mode
+	ErrorHandlingMode ErrorHandlingMode // String-based error handling mode
+	Filter            FilterOptions     // File filtering options
+
+	// Progress monitoring
+	Progress         ProgressFn        // Legacy progress function
+	ProgressCallback func(stats Stats) // Enhanced progress callback
+
+	// Logging and debug
+	Logger   *zap.Logger // Structured logger
+	LogLevel LogLevel    // Logging verbosity level
+	DryRun   bool        // Simulate operations without executing
+
+	// Performance tuning
+	BufferSize  int // Size of internal buffers
+	NumWorkers  int // Legacy worker count
+	WorkerCount int // Enhanced worker count
+
+	// Special handling
+	SymlinkHandling SymlinkHandling    // How to handle symbolic links
+	MemoryLimit     MemoryLimit        // Legacy memory limits
+	MemoryLimits    MemoryLimitOptions // Enhanced memory limits
+
+	// Extensibility
+	Middleware []MiddlewareFunc // Middleware functions for customization
 }
 
 // FilterOptions defines criteria for including/excluding files and directories.
@@ -1001,4 +1019,123 @@ func getCreationTime(path string, info os.FileInfo) time.Time {
 		return time.Unix(stat.Birthtimespec.Sec, stat.Birthtimespec.Nsec)
 	}
 	return time.Time{}
+}
+
+// WalkFunc defines the signature for file processing callbacks.
+type WalkFunc func(ctx context.Context, path string, info os.FileInfo) error
+
+// AdvancedWalkFunc includes statistics for each callback.
+type AdvancedWalkFunc func(ctx context.Context, path string, info os.FileInfo, stats Stats) error
+
+// ErrorHandlingMode defines how errors are handled during traversal.
+type ErrorHandlingMode string
+
+const (
+	ContinueOnError ErrorHandlingMode = "continue"
+	StopOnError     ErrorHandlingMode = "stop"
+	SkipOnError     ErrorHandlingMode = "skip"
+)
+
+// MemoryLimitOptions sets memory usage boundaries for the traversal.
+type MemoryLimitOptions struct {
+	SoftLimit int64
+	HardLimit int64
+}
+
+// MiddlewareFunc defines a middleware function for extensibility.
+type MiddlewareFunc func(next WalkFunc) WalkFunc
+
+// WalkWithOptions traverses the file tree rooted at root, calling the user-provided walkFn
+// for each file or directory in the tree, including root, with the enhanced context-aware API.
+func WalkWithOptions(root string, walkFn WalkFunc, options WalkOptions) error {
+	// Default context if not provided
+	ctx := options.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Convert the enhanced WalkFunc to the standard filepath.WalkFunc
+	adaptedWalkFn := func(path string, info os.FileInfo, err error) error {
+		return walkFn(ctx, path, info)
+	}
+
+	// Apply middleware if provided
+	if len(options.Middleware) > 0 {
+		wrappedFn := walkFn
+		// Apply middleware in reverse order (so first in list is outermost)
+		for i := len(options.Middleware) - 1; i >= 0; i-- {
+			wrappedFn = options.Middleware[i](wrappedFn)
+		}
+
+		// Update the adapted function with the middleware-wrapped one
+		adaptedWalkFn = func(path string, info os.FileInfo, err error) error {
+			return wrappedFn(ctx, path, info)
+		}
+	}
+
+	// Convert ErrorHandlingMode to ErrorHandling if needed
+	if options.ErrorHandlingMode != "" && options.ErrorHandling == 0 {
+		switch options.ErrorHandlingMode {
+		case ContinueOnError:
+			options.ErrorHandling = ErrorHandlingContinue
+		case StopOnError:
+			options.ErrorHandling = ErrorHandlingStop
+		case SkipOnError:
+			options.ErrorHandling = ErrorHandlingSkip
+		}
+	}
+
+	// Use the existing implementation but with our adapted walkFn
+	return WalkLimitWithOptions(ctx, root, adaptedWalkFn, options)
+}
+
+// WalkWithAdvancedOptions traverses the file tree rooted at root, calling the user-provided advanced walkFn
+// for each file or directory in the tree, including root, with access to traversal statistics.
+func WalkWithAdvancedOptions(root string, walkFn AdvancedWalkFunc, options WalkOptions) error {
+	// Default context if not provided
+	ctx := options.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	stats := Stats{}
+	startTime := time.Now()
+
+	// Create a mutex to protect access to stats during updates
+	var statsMutex sync.Mutex
+
+	// Setup the progress function to update stats
+	originalProgress := options.Progress
+	options.Progress = func(s Stats) {
+		statsMutex.Lock()
+		defer statsMutex.Unlock()
+
+		// Update our stats
+		stats = s
+		stats.ElapsedTime = time.Since(startTime)
+		stats.updateDerivedStats()
+
+		// Call the original progress function if set
+		if originalProgress != nil {
+			originalProgress(stats)
+		}
+
+		// Call the enhanced progress callback if set
+		if options.ProgressCallback != nil {
+			options.ProgressCallback(stats)
+		}
+	}
+
+	// Create a WalkFunc that provides stats to the advanced walkFn
+	wrappedWalkFn := func(ctx context.Context, path string, info os.FileInfo) error {
+		// Get a local copy of the current stats
+		statsMutex.Lock()
+		localStats := stats
+		statsMutex.Unlock()
+
+		return walkFn(ctx, path, info, localStats)
+	}
+
+	// Use our standard WalkWithOptions with the wrapped function
+	return WalkWithOptions(root, wrappedWalkFn, options)
 }
