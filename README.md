@@ -34,7 +34,7 @@ import (
     "os"
     "path/filepath"
 
-    "github.com/TFMV/stride"
+    "github.com/TFMV/stride/walk"
 )
 
 func main() {

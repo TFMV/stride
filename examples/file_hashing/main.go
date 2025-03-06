@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	stride "github.com/TFMV/stride/internal/walk"
+	stride "github.com/TFMV/stride/walk"
 	"go.uber.org/zap"
 )
 
@@ -45,7 +45,6 @@ var (
 	results      []HashResult
 	resultsMutex sync.Mutex
 	startTime    time.Time
-	totalFiles   int64
 	totalBytes   int64
 	hashOpts     HashOptions
 )

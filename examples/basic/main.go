@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"time"
 
-	stride "github.com/TFMV/stride/internal/walk"
+	stride "github.com/TFMV/stride/walk"
 	"go.uber.org/zap"
 )
 

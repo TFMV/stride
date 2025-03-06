@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	stride "github.com/TFMV/stride/internal/walk"
+	stride "github.com/TFMV/stride/walk"
 )
 
 func main() {
