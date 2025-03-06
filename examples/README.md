@@ -70,6 +70,25 @@ cd enhanced_api
 go run main.go [directory_path]
 ```
 
+### File Hashing (`file_hashing/`)
+
+Demonstrates using Stride to efficiently compute file hashes in parallel:
+
+- Supports multiple hash algorithms (MD5, SHA1, SHA256)
+- Processes files concurrently for maximum performance
+- Provides real-time progress reporting
+- Outputs results in text or CSV format
+- Includes filtering by file size and pattern
+
+```bash
+cd file_hashing
+go run main.go [directory_path]
+
+# With options
+go run main.go --workers=8 --pattern="*.go" --md5 --sha256 /path/to/directory
+go run main.go --format=csv --min-size=1024 /path/to/directory
+```
+
 ## Building Your Own
 
 These examples serve as starting points for building your own applications with Stride. The key components to consider:
