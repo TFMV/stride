@@ -54,6 +54,9 @@ func init() {
 	rootCmd.Flags().Bool("follow-symlinks", false, "Follow symbolic links")
 	rootCmd.Flags().Bool("progress", false, "Show progress updates")
 	rootCmd.Flags().String("error-mode", "continue", "Error handling mode (continue|stop|skip)")
+	rootCmd.Flags().String("min-permissions", "", "Minimum file permissions (octal, e.g. 0644)")
+	rootCmd.Flags().String("max-permissions", "", "Maximum file permissions (octal, e.g. 0755)")
+	rootCmd.Flags().String("exact-permissions", "", "Exact file permissions to match (octal, e.g. 0644)")
 
 	// Bind flags to viper
 	viper.BindPFlag("workers", rootCmd.Flags().Lookup("workers"))
@@ -67,6 +70,9 @@ func init() {
 	viper.BindPFlag("follow-symlinks", rootCmd.Flags().Lookup("follow-symlinks"))
 	viper.BindPFlag("progress", rootCmd.Flags().Lookup("progress"))
 	viper.BindPFlag("error-mode", rootCmd.Flags().Lookup("error-mode"))
+	viper.BindPFlag("min-permissions", rootCmd.Flags().Lookup("min-permissions"))
+	viper.BindPFlag("max-permissions", rootCmd.Flags().Lookup("max-permissions"))
+	viper.BindPFlag("exact-permissions", rootCmd.Flags().Lookup("exact-permissions"))
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -135,6 +141,35 @@ func runFileWalker(root string) error {
 	// Set exclude directories
 	if excludeDirs := viper.GetString("exclude-dir"); excludeDirs != "" {
 		filter.ExcludeDir = strings.Split(excludeDirs, ",")
+	}
+
+	// Parse permission filters
+	if minPermStr := viper.GetString("min-permissions"); minPermStr != "" {
+		// Parse octal string to int64
+		minPerm, err := strconv.ParseInt(minPermStr, 8, 32)
+		if err != nil {
+			return fmt.Errorf("invalid min-permissions value: %s (should be octal, e.g. 0644)", minPermStr)
+		}
+		filter.MinPermissions = os.FileMode(minPerm)
+	}
+
+	if maxPermStr := viper.GetString("max-permissions"); maxPermStr != "" {
+		// Parse octal string to int64
+		maxPerm, err := strconv.ParseInt(maxPermStr, 8, 32)
+		if err != nil {
+			return fmt.Errorf("invalid max-permissions value: %s (should be octal, e.g. 0755)", maxPermStr)
+		}
+		filter.MaxPermissions = os.FileMode(maxPerm)
+	}
+
+	if exactPermStr := viper.GetString("exact-permissions"); exactPermStr != "" {
+		// Parse octal string to int64
+		exactPerm, err := strconv.ParseInt(exactPermStr, 8, 32)
+		if err != nil {
+			return fmt.Errorf("invalid exact-permissions value: %s (should be octal, e.g. 0644)", exactPermStr)
+		}
+		filter.ExactPermissions = os.FileMode(exactPerm)
+		filter.UseExactPermissions = true
 	}
 
 	// Create walk options
