@@ -57,6 +57,11 @@ func main() {
 		MinSize:    1024,                       // Minimum file size of 1KB
 		Pattern:    "*.go",                     // Only Go files
 		ExcludeDir: []string{"vendor", ".git"}, // Exclude vendor and .git directories
+		// Permission filtering is also available:
+		// MinPermissions: 0644,                // Minimum permissions (at least readable)
+		// MaxPermissions: 0755,                // Maximum permissions (no more than rwxr-xr-x)
+		// ExactPermissions: 0644,              // Exact permissions to match
+		// UseExactPermissions: true,           // Use exact permission matching
 	}
 	err = stride.WalkLimitWithFilter(context.Background(), ".",
 		func(path string, info os.FileInfo, err error) error {

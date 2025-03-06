@@ -9,7 +9,7 @@ Stride is a high-performance, concurrent filesystem traversal library for Go tha
 ## Features
 
 - **Concurrent Processing**: Process files in parallel with configurable worker pools
-- **Flexible Filtering**: Filter files by size, extension, modification time, and more
+- **Flexible Filtering**: Filter files by size, extension, modification time, and permissions
 - **Progress Monitoring**: Real-time statistics during traversal
 - **Symlink Handling**: Configurable symlink following behavior
 - **Error Handling**: Multiple strategies for handling errors during traversal
@@ -76,6 +76,11 @@ filter := stride.FilterOptions{
     IncludeTypes: []string{".go", ".md"}, // Only process Go and Markdown files
     ExcludeDir:   []string{"vendor", "node_modules"}, // Skip these directories
     ModifiedAfter: time.Now().Add(-24 * time.Hour), // Only files modified in the last 24 hours
+    MinPermissions: 0644,              // Files must be at least readable by owner and group
+    MaxPermissions: 0755,              // Files must not have more permissions than rwxr-xr-x
+    // Alternatively, use exact permission matching:
+    // ExactPermissions: 0644,         // Match files with exactly these permissions
+    // UseExactPermissions: true,      // Enable exact permission matching
 }
 
 err := stride.WalkLimitWithFilter(ctx, ".", func(path string, info os.FileInfo, err error) error {

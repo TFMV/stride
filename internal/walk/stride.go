@@ -112,13 +112,17 @@ type WalkOptions struct {
 
 // FilterOptions defines criteria for including/excluding files and directories.
 type FilterOptions struct {
-	MinSize        int64     // Minimum file size in bytes
-	MaxSize        int64     // Maximum file size in bytes
-	Pattern        string    // Glob pattern for matching files
-	ExcludeDir     []string  // Directory patterns to exclude
-	IncludeTypes   []string  // File extensions to include (e.g. ".txt", ".go")
-	ModifiedAfter  time.Time // Only include files modified after
-	ModifiedBefore time.Time // Only include files modified before
+	MinSize             int64       // Minimum file size in bytes
+	MaxSize             int64       // Maximum file size in bytes
+	Pattern             string      // Glob pattern for matching files
+	ExcludeDir          []string    // Directory patterns to exclude
+	IncludeTypes        []string    // File extensions to include (e.g. ".txt", ".go")
+	ModifiedAfter       time.Time   // Only include files modified after
+	ModifiedBefore      time.Time   // Only include files modified before
+	MinPermissions      os.FileMode // Minimum file permissions (e.g. 0644)
+	MaxPermissions      os.FileMode // Maximum file permissions (e.g. 0755)
+	ExactPermissions    os.FileMode // Exact file permissions to match
+	UseExactPermissions bool        // Whether to use exact permissions matching
 }
 
 // --------------------------------------------------------------------------
@@ -635,6 +639,24 @@ func filePassesFilter(path string, info os.FileInfo, filter FilterOptions, symli
 			return false
 		}
 	}
+
+	// Permission filtering
+	mode := info.Mode().Perm() // Get just the permission bits
+	if filter.UseExactPermissions && filter.ExactPermissions != 0 {
+		// Exact permission matching
+		if mode != filter.ExactPermissions {
+			return false
+		}
+	} else {
+		// Range-based permission matching
+		if filter.MinPermissions != 0 && mode&filter.MinPermissions != filter.MinPermissions {
+			return false
+		}
+		if filter.MaxPermissions != 0 && mode&^filter.MaxPermissions != 0 {
+			return false
+		}
+	}
+
 	return true
 }
 
