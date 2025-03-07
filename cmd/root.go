@@ -22,12 +22,41 @@ var (
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "filewalker [options] <path>",
-	Short: "A file walking utility using stride",
-	Long: `filewalker is a command line utility that walks through directories
-and processes files based on specified criteria using the stride library.`,
+	Use:   "stride [options] <path>",
+	Short: "A high-performance file walking utility",
+	Long: `stride is a command line utility for high-performance filesystem traversal.
+It supports concurrent processing, filtering, and real-time progress monitoring.
+
+Example:
+  stride /path/to/directory                    # Basic usage
+  stride --pattern="*.go" --workers=8 /src     # Find Go files using 8 workers
+  stride --follow-symlinks --progress /data    # Follow symlinks with progress`,
 	Version: version,
-	Args:    cobra.ExactArgs(1),
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) < 1 {
+			return fmt.Errorf("missing required argument: path\n\nUsage: stride <path>\nExample: stride /path/to/directory")
+		}
+		if len(args) > 1 {
+			return fmt.Errorf("too many arguments: expected 1, got %d\n\nUsage: stride <path>", len(args))
+		}
+		return nil
+	},
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// Set default excluded directories if none specified
+		if cmd.Flags().Lookup("exclude-dir").Value.String() == "" {
+			// Common system directories that often have permission issues
+			defaultExcludes := []string{
+				".Trash",
+				".Trashes",
+				".fseventsd",
+				".Spotlight-V100",
+				"System Volume Information",
+				"$RECYCLE.BIN",
+				"lost+found",
+			}
+			cmd.Flags().Set("exclude-dir", strings.Join(defaultExcludes, ","))
+		}
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := args[0]
 		return runFileWalker(path)
@@ -120,10 +149,10 @@ func initConfig() {
 			os.Exit(1)
 		}
 
-		// Search config in home directory with name ".filewalker" (without extension).
+		// Search config in home directory with name ".stride" (without extension).
 		viper.AddConfigPath(home)
 		viper.SetConfigType("yaml")
-		viper.SetConfigName(".filewalker")
+		viper.SetConfigName(".stride")
 	}
 
 	viper.AutomaticEnv() // read in environment variables that match
@@ -347,13 +376,19 @@ func runFileWalker(root string) error {
 
 	// Set progress function if requested
 	if viper.GetBool("progress") {
+		// Print a final newline when done
+		defer fmt.Println()
+
 		opts.Progress = func(stats stride.Stats) {
 			if viper.GetString("format") == "json" {
 				jsonStats, _ := json.Marshal(stats)
 				fmt.Println(string(jsonStats))
 			} else {
-				fmt.Printf("\rProcessed: %d files, %d dirs, %d bytes, %.2f MB/s",
-					stats.FilesProcessed, stats.DirsProcessed, stats.BytesProcessed, stats.SpeedMBPerSec)
+				fmt.Printf("\rProcessed: %d files, %d dirs, %.2f MB (%.2f MB/s)    ",
+					stats.FilesProcessed,
+					stats.DirsProcessed,
+					float64(stats.BytesProcessed)/(1024*1024),
+					stats.SpeedMBPerSec)
 			}
 		}
 	}

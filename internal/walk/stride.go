@@ -536,6 +536,34 @@ func WalkLimitWithOptions(ctx context.Context, root string, walkFn filepath.Walk
 	startTime := time.Now()
 	visitedSymlinks = sync.Map{} // Clear symlink cache
 
+	// Set up periodic progress updates if progress function is provided
+	if opts.Progress != nil {
+		// Create a ticker to send progress updates periodically
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+
+		// Create a done channel to signal when to stop the ticker
+		doneCh := make(chan struct{})
+		defer close(doneCh)
+
+		// Start a goroutine to send progress updates
+		go func() {
+			for {
+				select {
+				case <-ticker.C:
+					// Update elapsed time and derived stats
+					stats.ElapsedTime = time.Since(startTime)
+					stats.updateDerivedStats()
+					opts.Progress(*stats)
+				case <-doneCh:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
 	// Track the root depth for MinDepth/MaxDepth filtering
 	rootDepth := strings.Count(filepath.Clean(root), string(os.PathSeparator))
 
