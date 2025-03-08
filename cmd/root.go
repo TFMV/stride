@@ -1,3 +1,12 @@
+// Package cmd provides the CLI commands for the stride command.
+//
+// This package contains the implementation of the `stride` command, which is a
+// high-performance file walking utility that extends the standard `filepath.Walk`
+// functionality with concurrency, filtering, and monitoring capabilities.
+//
+// The `stride` command supports various options for filtering files based on name,
+// path, size, modification time, and more. It also provides functionality to execute
+// commands for each matched file or format the output using templates.
 package cmd
 
 import (
