@@ -364,6 +364,8 @@ func Find(ctx context.Context, root string, opts FindOptions, handler FindHandle
 			IncludeTypes: []string{}, // Include all file types by default
 		},
 		NumWorkers: 4, // Use multiple workers for better performance
+		// Set error handling mode to continue on permission errors
+		ErrorHandlingMode: "continue",
 	}
 
 	// Set symlink handling
@@ -375,7 +377,21 @@ func Find(ctx context.Context, root string, opts FindOptions, handler FindHandle
 
 	// Walk the file system
 	err := WalkLimitWithOptions(ctx, root, func(path string, info os.FileInfo, err error) error {
+		// Handle permission errors gracefully
 		if err != nil {
+			// Check if it's a permission error
+			if os.IsPermission(err) {
+				// Log the permission error but continue processing
+				if info != nil && info.IsDir() {
+					// For directories with permission issues, skip them
+					return filepath.SkipDir
+				}
+				// For files with permission issues, report the error but continue
+				return handler(ctx, FindResult{
+					Error: fmt.Errorf("permission denied: %s: %w", path, err),
+				})
+			}
+			// For other errors, pass them to the handler
 			return handler(ctx, FindResult{
 				Error: err,
 			})
