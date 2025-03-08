@@ -361,7 +361,7 @@ func Find(ctx context.Context, root string, opts FindOptions, handler FindHandle
 			}
 		}()
 
-		// TODO: Implement file system watcher
+		
 	}
 
 	// Set up walk options

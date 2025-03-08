@@ -139,6 +139,42 @@ stride find /path/to/search --watch
 stride find /path/to/search --watch --events=create,modify,delete
 ```
 
+## Watch Command
+
+The `watch` command monitors filesystem changes and can execute actions when files are created, modified, or deleted:
+
+```bash
+# Watch current directory
+stride watch
+
+# Watch specific directory
+stride watch /path/to/watch
+
+# Watch for specific events
+stride watch --events=create,modify /path/to/watch
+
+# Watch recursively (including subdirectories)
+stride watch --recursive /path/to/watch
+
+# Execute command when events occur
+stride watch --exec="echo Changed: {}" /path/to/watch
+
+# Format output with template
+stride watch --format="{base} was {event} at {time}" /path/to/watch
+
+# Watch only specific file types
+stride watch --pattern="*.go" /path/to/watch
+
+# Ignore specific files
+stride watch --ignore="*.tmp" /path/to/watch
+
+# Watch with timeout
+stride watch --timeout=1h /path/to/watch
+
+# Include hidden files and directories
+stride watch --include-hidden /path/to/watch
+```
+
 ## Template Placeholders
 
 The following placeholders can be used in `--format` and `--exec` options:
@@ -150,6 +186,7 @@ The following placeholders can be used in `--format` and `--exec` options:
 {size}    - Size in bytes
 {time}    - Modification time
 {version} - Version identifier (if available)
+{event}   - Event type (created, modified, deleted, renamed, chmod) - only for watch command
 ```
 
 Quoted versions are also available for shell escaping: `{""}`, `{"base"}`, etc.
@@ -192,5 +229,17 @@ stride find /home --larger-than=100MB --format="{} ({size} bytes)"
 ### Watch for New Files
 
 ```bash
-stride find ~/Downloads --watch --exec="echo New file: {base}"
+stride watch ~/Downloads --exec="echo New file: {base}"
+```
+
+### Watch for Changes in Go Files
+
+```bash
+stride watch --recursive --pattern="*.go" --events=create,modify --exec="go test ./..." ~/projects
+```
+
+### Watch with Custom Output Format
+
+```bash
+stride watch --format="{base} was {event} at {time}" ~/Documents
 ```

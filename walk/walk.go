@@ -54,6 +54,13 @@ type (
 
 	// ProgressFn is called periodically with traversal statistics.
 	ProgressFn = internal.ProgressFn
+
+	// Re-export watch types and functions
+	WatchEvent   = internal.WatchEvent
+	WatchOptions = internal.WatchOptions
+	WatchMessage = internal.WatchMessage
+	WatchResult  = internal.WatchResult
+	WatchHandler = internal.WatchHandler
 )
 
 // Re-export all the constants
@@ -78,6 +85,13 @@ const (
 	ErrorHandlingContinue = internal.ErrorHandlingContinue
 	ErrorHandlingStop     = internal.ErrorHandlingStop
 	ErrorHandlingSkip     = internal.ErrorHandlingSkip
+
+	// Watch event constants
+	EventCreate = internal.EventCreate
+	EventModify = internal.EventModify
+	EventDelete = internal.EventDelete
+	EventRename = internal.EventRename
+	EventChmod  = internal.EventChmod
 )
 
 // Walk traverses the file tree rooted at root, calling walkFn for each file or directory.
@@ -179,4 +193,19 @@ func TimingMiddleware(threshold time.Duration) MiddlewareFunc {
 			return err
 		}
 	}
+}
+
+// Watch monitors a directory for filesystem changes
+func Watch(ctx context.Context, root string, opts WatchOptions, handler WatchHandler) error {
+	return internal.Watch(ctx, root, opts, handler)
+}
+
+// WatchWithExec watches for filesystem changes and executes a command for each event
+func WatchWithExec(ctx context.Context, root string, opts WatchOptions, cmdTemplate string) error {
+	return internal.WatchWithExec(ctx, root, opts, cmdTemplate)
+}
+
+// WatchWithFormat watches for filesystem changes and formats output for each event
+func WatchWithFormat(ctx context.Context, root string, opts WatchOptions, formatTemplate string) error {
+	return internal.WatchWithFormat(ctx, root, opts, formatTemplate)
 }

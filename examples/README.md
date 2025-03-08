@@ -86,6 +86,21 @@ cd find_api
 go run main.go [directory_path]
 ```
 
+### Watch API (`watch/`)
+
+Demonstrates Stride's filesystem monitoring capabilities:
+
+- Real-time monitoring of filesystem changes
+- Event filtering (create, modify, delete, rename, chmod)
+- Pattern matching for specific file types
+- Command execution on file events
+- Custom output formatting
+
+```bash
+cd watch
+go run main.go [directory_path]
+```
+
 ### File Hashing (`file_hashing/`)
 
 Demonstrates using Stride to efficiently compute file hashes in parallel:
