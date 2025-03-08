@@ -25,7 +25,9 @@ go get github.com/TFMV/stride
 
 ## Quick Start
 
-For basic usage examples, see the [examples directory](examples/).
+For usage examples, see the [examples directory](examples/).
+
+### Walk
 
 ```go
 // Basic usage - similar to filepath.Walk
@@ -38,13 +40,22 @@ err := stride.Walk(".", func(path string, info os.FileInfo, err error) error {
 })
 ```
 
-## Documentation
+### Find
 
-For detailed documentation and examples, see:
+```go
+opts := walk.FindOptions{
+    NamePattern: "*.go", // Find all Go files
+}
 
-- [Examples directory](examples/) - Contains practical usage examples
-- [GoDoc](https://pkg.go.dev/github.com/TFMV/stride) - API documentation
-- [Wiki](https://github.com/TFMV/stride/wiki) - Additional guides and tutorials
+// Find files and process them
+err := walk.Find(ctx, rootDir, opts, func(ctx context.Context, result walk.FindResult) error {
+    if result.Error != nil {
+        return result.Error
+    }
+    fmt.Printf("Found Go file: %s\n", result.Message.Path)
+    return nil
+})
+```
 
 ## Key Components
 
@@ -70,12 +81,17 @@ The library includes find capabilities:
 
 Stride includes a CLI tool for quick filesystem traversal:
 
+A CLI command reference is available in the [examples/cli/](examples/cli/README.md) directory.
+
 ```bash
 # Install the command-line tool
 go install github.com/TFMV/stride@latest
 
-# Basic usage
+# Basic walk usage
 stride /path/to/directory
+
+# Basic find usage
+stride find /path/to/search --name="*.go"
 ```
 
 ## Performance
@@ -100,4 +116,8 @@ go test -bench=. -benchmem ./...
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the [MIT License](LICENSE).
+
+## Author
+
+Built with :heart: by TFMV.
