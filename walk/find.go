@@ -1,4 +1,12 @@
 // Package walk provides high-performance filesystem traversal with advanced filtering
+// and monitoring capabilities.
+//
+// This package contains the implementation of the `find` command, which allows
+// users to search for files in a given directory with advanced filtering capabilities.
+//
+// The `find` command supports various options for filtering files based on name,
+// path, size, modification time, and more. It also provides functionality to execute
+// commands for each matched file or format the output using templates.
 package walk
 
 import (
