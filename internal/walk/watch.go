@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TFMV/blink/pkg/blink"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -106,38 +107,29 @@ func Watch(ctx context.Context, root string, opts WatchOptions, handler WatchHan
 		defer cancel()
 	}
 
-	// Create a new watcher
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return fmt.Errorf("error creating watcher: %w", err)
-	}
-	defer watcher.Close()
+	// Create a watcher based on whether we need recursive watching
+	var watcher *blink.RecursiveWatcher
+	var fsWatcher *fsnotify.Watcher
+	var err error
 
-	// Add the root directory to the watcher
-	if err := watcher.Add(root); err != nil {
-		return fmt.Errorf("error watching directory %s: %w", root, err)
-	}
-
-	// If recursive, add all subdirectories
 	if opts.Recursive {
-		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-			if info.IsDir() {
-				// Skip hidden directories if not included
-				if !opts.IncludeHidden && isHidden(path) {
-					return filepath.SkipDir
-				}
-				if err := watcher.Add(path); err != nil {
-					// Log the error but continue
-					fmt.Fprintf(os.Stderr, "Error watching directory %s: %v\n", path, err)
-				}
-			}
-			return nil
-		})
+		// Use the recursive watcher from blink
+		watcher, err = blink.NewRecursiveWatcher(root)
 		if err != nil {
-			return fmt.Errorf("error walking directory tree: %w", err)
+			return fmt.Errorf("error creating recursive watcher: %w", err)
+		}
+		defer watcher.Close()
+	} else {
+		// Use a regular fsnotify watcher for non-recursive watching
+		fsWatcher, err = fsnotify.NewWatcher()
+		if err != nil {
+			return fmt.Errorf("error creating watcher: %w", err)
+		}
+		defer fsWatcher.Close()
+
+		// Add the root directory to the watcher
+		if err := fsWatcher.Add(root); err != nil {
+			return fmt.Errorf("error watching directory %s: %w", root, err)
 		}
 	}
 
@@ -176,7 +168,7 @@ func Watch(ctx context.Context, root string, opts WatchOptions, handler WatchHan
 		defer wg.Done()
 		for {
 			select {
-			case event, ok := <-watcher.Events:
+			case event, ok := <-getEventsChannel(watcher, fsWatcher):
 				if !ok {
 					return
 				}
@@ -206,6 +198,8 @@ func Watch(ctx context.Context, root string, opts WatchOptions, handler WatchHan
 					// Get file info
 					var fileInfo os.FileInfo
 					var err error
+					isDir := false
+
 					if !event.Has(fsnotify.Remove) {
 						fileInfo, err = os.Stat(event.Name)
 						if err != nil {
@@ -215,10 +209,11 @@ func Watch(ctx context.Context, root string, opts WatchOptions, handler WatchHan
 							})
 							continue
 						}
+						isDir = fileInfo.IsDir()
 
-						// If it's a directory and we're in recursive mode, add it to the watcher
-						if opts.Recursive && fileInfo.IsDir() && event.Has(fsnotify.Create) {
-							if err := watcher.Add(event.Name); err != nil {
+						// If using non-recursive watcher and a directory is created, we need to add it manually
+						if !opts.Recursive && isDir && event.Has(fsnotify.Create) && fsWatcher != nil {
+							if err := fsWatcher.Add(event.Name); err != nil {
 								// Report the error but continue
 								handler(ctx, WatchResult{
 									Error: fmt.Errorf("error watching new directory %s: %w", event.Name, err),
@@ -269,12 +264,12 @@ func Watch(ctx context.Context, root string, opts WatchOptions, handler WatchHan
 						Dir:      filepath.Dir(event.Name),
 						Time:     time.Now(),
 						Event:    eventType,
+						IsDir:    isDir,
 						Metadata: make(map[string]string),
 					}
 
 					if fileInfo != nil {
 						msg.Size = fileInfo.Size()
-						msg.IsDir = fileInfo.IsDir()
 						msg.Time = fileInfo.ModTime()
 					}
 
@@ -287,7 +282,7 @@ func Watch(ctx context.Context, root string, opts WatchOptions, handler WatchHan
 					}
 				}
 
-			case err, ok := <-watcher.Errors:
+			case err, ok := <-getErrorsChannel(watcher, fsWatcher):
 				if !ok {
 					return
 				}
@@ -309,6 +304,22 @@ func Watch(ctx context.Context, root string, opts WatchOptions, handler WatchHan
 	wg.Wait()
 
 	return nil
+}
+
+// getEventsChannel returns the appropriate events channel based on which watcher is being used
+func getEventsChannel(recursiveWatcher *blink.RecursiveWatcher, fsWatcher *fsnotify.Watcher) <-chan fsnotify.Event {
+	if recursiveWatcher != nil {
+		return recursiveWatcher.Watcher.Events
+	}
+	return fsWatcher.Events
+}
+
+// getErrorsChannel returns the appropriate errors channel based on which watcher is being used
+func getErrorsChannel(recursiveWatcher *blink.RecursiveWatcher, fsWatcher *fsnotify.Watcher) <-chan error {
+	if recursiveWatcher != nil {
+		return recursiveWatcher.Watcher.Errors
+	}
+	return fsWatcher.Errors
 }
 
 // WatchWithExec watches for filesystem changes and executes a command for each event
