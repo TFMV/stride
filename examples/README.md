@@ -70,6 +70,22 @@ cd enhanced_api
 go run main.go [directory_path]
 ```
 
+### Find API (`find_api/`)
+
+Demonstrates Stride's powerful file searching capabilities:
+
+- Basic file searching with pattern matching
+- Advanced filtering by name, path, size, and time
+- Executing commands on found files (similar to `find -exec`)
+- Custom output formatting with templates
+- Permission error handling with different strategies
+- Tracking and reporting permission issues during traversal
+
+```bash
+cd find_api
+go run main.go [directory_path]
+```
+
 ### File Hashing (`file_hashing/`)
 
 Demonstrates using Stride to efficiently compute file hashes in parallel:
