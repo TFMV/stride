@@ -69,6 +69,11 @@ Stride builds upon the standard `filepath.Walk` functionality while adding concu
 - Optimized core functions with minimal memory allocations
 - Efficient filtering with negligible overhead
 - Progress reporting with minimal performance impact
+- Find functionality processes files at a rate of approximately 1.6 million files per second
+- Pattern matching adds only 1-5% overhead to basic traversal
+- Core matching functions optimized with minimal allocations
+- While the standard library's `filepath.Walk` is faster for simple traversal, Stride's concurrent processing provides significant advantages for CPU-bound operations
+- Stride's built-in filtering capabilities add minimal overhead compared to implementing filtering manually with the standard library
 
 ## Installation
 

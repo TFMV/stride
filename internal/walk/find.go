@@ -143,14 +143,8 @@ func formatCommand(template string, msg FindMessage) string {
 
 // executeCommand executes a command with the given arguments
 func executeCommand(ctx context.Context, cmdStr string, msg FindMessage) error {
-	// Split the command string into command and arguments
-	args := strings.Fields(cmdStr)
-	if len(args) == 0 {
-		return fmt.Errorf("empty command")
-	}
-
-	// Create the command
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	// Use shell to execute the command to handle redirections
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
 
 	// Capture output
 	var stdout, stderr bytes.Buffer
@@ -198,6 +192,12 @@ func pathMatch(pattern, path string) bool {
 	patternParts := strings.Split(pattern, "*")
 	if len(patternParts) == 1 {
 		return pattern == path
+	}
+
+	// For patterns like "file.*", we should check against the base filename
+	// not the full path, to match the test expectations
+	if !strings.Contains(pattern, "/") && strings.Contains(path, "/") {
+		path = filepath.Base(path)
 	}
 
 	if !strings.HasPrefix(path, patternParts[0]) {
@@ -319,33 +319,23 @@ func trimPathAtMaxDepth(rootPath, path string, maxDepth uint) string {
 	return filepath.Join(rootPath, filepath.Join(pathComponents...))
 }
 
-// Find searches for files matching the given criteria and processes them with the handler
+// Find searches for files matching the given criteria
 func Find(ctx context.Context, root string, opts FindOptions, handler FindHandler) error {
 	if handler == nil {
 		handler = defaultFindHandler()
 	}
 
-	// Set up walk options
-	walkOpts := WalkOptions{
-		Filter: FilterOptions{
-			ExcludeDir: []string{},
-		},
-		SymlinkHandling: SymlinkIgnore,
-		ErrorHandling:   ErrorHandlingContinue,
+	// Create a context if not provided
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	// Configure symlink handling
-	if opts.FollowSymlinks {
-		walkOpts.SymlinkHandling = SymlinkFollow
-	}
-
-	// Set up a channel to receive watch events if watching is enabled
+	// Set up watch channel if watching is enabled
 	var watchChan chan FindResult
 	var watchWg sync.WaitGroup
 	if opts.Watch {
 		watchChan = make(chan FindResult, 100)
 		watchWg.Add(1)
-
 		go func() {
 			defer watchWg.Done()
 			for {
@@ -366,6 +356,23 @@ func Find(ctx context.Context, root string, opts FindOptions, handler FindHandle
 		// TODO: Implement file system watcher
 	}
 
+	// Set up walk options
+	walkOpts := WalkOptions{
+		Context: ctx,
+		Filter: FilterOptions{
+			// Pass through relevant filter options
+			IncludeTypes: []string{}, // Include all file types by default
+		},
+		NumWorkers: 4, // Use multiple workers for better performance
+	}
+
+	// Set symlink handling
+	if opts.FollowSymlinks {
+		walkOpts.SymlinkHandling = SymlinkFollow
+	} else {
+		walkOpts.SymlinkHandling = SymlinkIgnore
+	}
+
 	// Walk the file system
 	err := WalkLimitWithOptions(ctx, root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -382,6 +389,35 @@ func Find(ctx context.Context, root string, opts FindOptions, handler FindHandle
 			return nil
 		}
 
+		// Apply max depth if specified
+		if opts.MaxDepth > 0 && info.IsDir() {
+			// Calculate the depth relative to the root
+			// For the root directory itself, depth is 0
+			relPath, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+
+			// If we're at the root, relPath will be "."
+			if relPath == "." {
+				// Root directory, depth is 0
+				// No need to skip
+			} else {
+				depth := uint(strings.Count(relPath, string(os.PathSeparator)) + 1)
+				if depth > opts.MaxDepth {
+					return filepath.SkipDir
+				}
+			}
+		} else if opts.MaxDepth == 0 && info.IsDir() && path != root {
+			// Special case: MaxDepth = 0 means only process files in the root directory
+			return filepath.SkipDir
+		}
+
+		// Skip directories if we're only interested in files
+		if info.IsDir() {
+			return nil
+		}
+
 		// Create the message
 		msg := FindMessage{
 			Path:     path,
@@ -392,19 +428,6 @@ func Find(ctx context.Context, root string, opts FindOptions, handler FindHandle
 			IsDir:    info.IsDir(),
 			Metadata: make(map[string]string),
 			Tags:     make(map[string]string),
-		}
-
-		// Apply max depth if specified
-		if opts.MaxDepth > 0 && info.IsDir() {
-			depth := uint(strings.Count(path, string(os.PathSeparator)) - strings.Count(root, string(os.PathSeparator)))
-			if depth > opts.MaxDepth {
-				return filepath.SkipDir
-			}
-		}
-
-		// Skip directories if we're only interested in files
-		if info.IsDir() {
-			return nil
 		}
 
 		// Check if the file matches the criteria
