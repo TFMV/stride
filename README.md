@@ -218,7 +218,7 @@ const (
 
 ### Middleware Support
 
-The new API supports middleware functions for adding cross-cutting concerns:
+The API supports middleware functions for adding cross-cutting concerns:
 
 ```go
 type MiddlewareFunc func(next WalkFunc) WalkFunc
@@ -226,7 +226,7 @@ type MiddlewareFunc func(next WalkFunc) WalkFunc
 
 ### Middleware Extensibility
 
-The enhanced API supports middleware patterns for cross-cutting concerns like logging, metrics, and timing:
+The API supports middleware patterns for cross-cutting concerns like logging, metrics, and timing:
 
 ```go
 // Create a logging middleware
