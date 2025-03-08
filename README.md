@@ -371,6 +371,176 @@ From the command line:
 stride --follow-symlinks /path/to/directory
 ```
 
+## Advanced Find Functionality
+
+Stride includes powerful find capabilities inspired by Unix's `find` command but with modern enhancements. This allows for sophisticated file searching with pattern matching, filtering, and action execution.
+
+### Key Features
+
+- **Pattern Matching**: Find files by name, path, or regular expressions
+- **Time-Based Filtering**: Find files older or newer than specified durations
+- **Size-Based Filtering**: Find files larger or smaller than specified sizes
+- **Metadata Filtering**: Find files with specific metadata or tags
+- **Command Execution**: Execute commands for each matched file
+- **Output Formatting**: Format output using templates
+- **File Watching**: Watch for file changes and process them in real-time
+
+### Basic Usage
+
+```go
+import (
+    "context"
+    "fmt"
+    "regexp"
+    "time"
+    
+    "github.com/TFMV/stride/walk"
+)
+
+func main() {
+    // Create find options
+    opts := walk.NewFindOptions()
+    opts.NamePattern = "*.go"
+    opts.OlderThan = 24 * time.Hour
+    
+    // Find files and process them
+    err := walk.Find(context.Background(), "/path/to/search", opts, func(ctx context.Context, result walk.FindResult) error {
+        if result.Error != nil {
+            return result.Error
+        }
+        fmt.Println(result.Message.Path)
+        return nil
+    })
+    
+    if err != nil {
+        fmt.Printf("Error: %v\n", err)
+    }
+}
+```
+
+### Pattern Matching
+
+Stride supports multiple pattern matching methods:
+
+```go
+// Match by file name (supports wildcards)
+opts.NamePattern = "*.go"
+
+// Match by path (supports wildcards)
+opts.PathPattern = "*/src/*.go"
+
+// Skip paths matching this pattern
+opts.IgnorePattern = "*/vendor/*"
+
+// Match by regular expression
+opts.RegexPattern = regexp.MustCompile(`.*_test\.go$`)
+```
+
+### Time and Size Filtering
+
+```go
+// Files older than 7 days
+opts.OlderThan = 7 * 24 * time.Hour
+
+// Files newer than 1 hour
+opts.NewerThan = time.Hour
+
+// Files larger than 1MB
+opts.LargerSize = 1024 * 1024
+
+// Files smaller than 10KB
+opts.SmallerSize = 10 * 1024
+```
+
+### Metadata and Tag Filtering
+
+```go
+// Match files with specific metadata
+metaPatterns := map[string]string{
+    "author": "john.*",
+    "version": "1\\.0\\..*",
+}
+opts.MatchMeta, _ = walk.CompileRegexMap(metaPatterns)
+
+// Match files with specific tags
+tagPatterns := map[string]string{
+    "status": "approved",
+    "category": "document",
+}
+opts.MatchTags, _ = walk.CompileRegexMap(tagPatterns)
+```
+
+### Command Execution
+
+Execute a command for each matched file:
+
+```go
+// Execute a command for each matched file
+err := walk.FindWithExec(ctx, "/path/to/search", opts, "echo Processing: {}")
+```
+
+The command template supports various placeholders:
+
+- `{}`: Full path to the file
+- `{base}`: Base name of the file
+- `{dir}`: Directory containing the file
+- `{size}`: Size in bytes
+- `{time}`: Modification time
+- `{version}`: Version identifier (if available)
+
+Quoted versions are also available: `{""}`, `{"base"}`, etc.
+
+### Output Formatting
+
+Format the output using templates:
+
+```go
+// Format output using a template
+err := walk.FindWithFormat(ctx, "/path/to/search", opts, "{base} ({size} bytes)")
+```
+
+### File Watching
+
+Watch for file changes and process them in real-time:
+
+```go
+// Watch for file changes
+opts.Watch = true
+opts.WatchEvents = []string{"create", "modify"}
+
+err := walk.Find(ctx, "/path/to/watch", opts, func(ctx context.Context, result walk.FindResult) error {
+    fmt.Printf("File changed: %s\n", result.Message.Path)
+    return nil
+})
+```
+
+### Command Line Interface
+
+Stride's CLI includes a powerful `find` command:
+
+```bash
+# Find all Go files
+stride find /path/to/search --name="*.go"
+
+# Find files modified in the last 24 hours
+stride find /path/to/search --newer-than=24h
+
+# Find large files
+stride find /path/to/search --larger-than=10MB
+
+# Find files matching a regex pattern
+stride find /path/to/search --regex=".*\\.log$"
+
+# Execute a command for each matched file
+stride find /path/to/search --exec="echo Processing: {}"
+
+# Format output
+stride find /path/to/search --format="{base} ({size} bytes)"
+
+# Watch for changes
+stride find /path/to/search --watch
+```
+
 ## Command Line Tool
 
 Stride includes a powerful CLI tool for quick and efficient filesystem traversal.
