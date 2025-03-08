@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -21,7 +22,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/karrick/godirwalk"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -176,9 +176,9 @@ func Walk(root string, walkFn filepath.WalkFunc) error {
 	return WalkLimit(context.Background(), root, walkFn, DefaultConcurrentWalks)
 }
 
-// WalkLimit traverses a directory tree with a specified concurrency limit.
-// It distributes work across a pool of goroutines while respecting context cancellation.
-// Directories are processed synchronously so that a SkipDir result prevents descending.
+// WalkLimit walks the file tree rooted at root, calling walkFn for each file or
+// directory in the tree, including root. It uses a worker pool with the specified
+// concurrency limit to process files concurrently.
 func WalkLimit(ctx context.Context, root string, walkFn filepath.WalkFunc, limit int) error {
 	if limit < 1 {
 		return errors.New("stride: concurrency limit must be greater than zero")
@@ -187,7 +187,9 @@ func WalkLimit(ctx context.Context, root string, walkFn filepath.WalkFunc, limit
 	logger := createLogger(LogLevelInfo) // Default log level
 	defer logger.Sync()
 
-	logger.Debug("starting walk", zap.String("root", root), zap.Int("workers", limit))
+	logger.Debug("starting walk",
+		zap.String("root", root),
+		zap.Int("workers", limit))
 
 	tasks := make(chan walkArgs, limit)
 	var tasksWg sync.WaitGroup
@@ -224,48 +226,47 @@ func WalkLimit(ctx context.Context, root string, walkFn filepath.WalkFunc, limit
 		go worker()
 	}
 
-	// Create godirwalk.Options with the callback function.
-	options := &godirwalk.Options{
-		Callback: func(path string, info *godirwalk.Dirent) error {
-			if ctx.Err() != nil {
-				logger.Warn("walk canceled", zap.String("path", path))
+	// Use filepath.WalkDir which is more efficient than filepath.Walk or godirwalk
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if ctx.Err() != nil {
+			logger.Warn("walk canceled", zap.String("path", path))
+			return context.Canceled
+		}
+
+		// Get file info
+		fileInfo, err := d.Info()
+		if err != nil {
+			return err
+		}
+
+		// For directories, process synchronously so that SkipDir is honored.
+		if fileInfo.IsDir() {
+			ret := walkFn(path, fileInfo, nil)
+			if errors.Is(ret, filepath.SkipDir) {
+				return filepath.SkipDir
+			}
+			if ret != nil {
+				errLock.Lock()
+				walkErrors = append(walkErrors, fmt.Errorf("path %q: %w", path, ret))
+				errLock.Unlock()
+			}
+		} else {
+			// For files, send the task to workers.
+			tasksWg.Add(1)
+			select {
+			case <-ctx.Done():
+				tasksWg.Done()
 				return context.Canceled
+			case tasks <- walkArgs{path: path, info: fileInfo, err: nil}: // Pass fileInfo
 			}
-			// Convert godirwalk.Dirent to os.FileInfo
-			fileInfo, err := os.Lstat(path)
-			if err != nil {
-				return err
-			}
+		}
+		return nil
+	})
 
-			// For directories, process synchronously so that SkipDir is honored.
-			if fileInfo.IsDir() {
-				ret := walkFn(path, fileInfo, nil)
-				if errors.Is(ret, filepath.SkipDir) {
-					return filepath.SkipDir
-				}
-				if ret != nil {
-					errLock.Lock()
-					walkErrors = append(walkErrors, fmt.Errorf("path %q: %w", path, ret))
-					errLock.Unlock()
-				}
-			} else {
-				// For files, send the task to workers.
-				tasksWg.Add(1)
-				select {
-				case <-ctx.Done():
-					tasksWg.Done()
-					return context.Canceled
-				case tasks <- walkArgs{path: path, info: fileInfo, err: nil}: // Pass fileInfo
-				}
-			}
-			return nil
-		},
-		// Default to not following symlinks for backward compatibility
-		FollowSymbolicLinks: false,
-	}
-
-	// Use godirwalk.Walk with the options.
-	err := godirwalk.Walk(root, options)
 	if err != nil && !errors.Is(err, filepath.SkipDir) {
 		errLock.Lock()
 		walkErrors = append(walkErrors, err)
@@ -655,42 +656,35 @@ func WalkLimitWithOptions(ctx context.Context, root string, walkFn filepath.Walk
 
 // walkLimitWithSymlinkHandling is a version of WalkLimit that respects the SymlinkHandling option
 func walkLimitWithSymlinkHandling(ctx context.Context, root string, walkFn filepath.WalkFunc, limit int, symlinkHandling SymlinkHandling) error {
-	if limit < 1 {
-		return errors.New("stride: concurrency limit must be greater than zero")
+	// Create a context if not provided
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	logger := createLogger(LogLevelInfo) // Default log level
+	// Create a logger
+	logger := createLogger(LogLevelInfo)
 	defer logger.Sync()
 
-	logger.Debug("starting walk with symlink handling",
-		zap.String("root", root),
-		zap.Int("workers", limit),
-		zap.Any("symlink_handling", symlinkHandling))
+	// Create a channel for tasks
+	tasks := make(chan walkArgs, limit*2)
 
-	tasks := make(chan walkArgs, limit)
-	var tasksWg sync.WaitGroup
+	// Create a wait group for workers
 	var workerWg sync.WaitGroup
+	var tasksWg sync.WaitGroup
 
-	// Error collection.
+	// Create a slice to collect errors
 	var walkErrors []error
 	var errLock sync.Mutex
 
-	// Worker processes tasks (files only).
+	// Create a worker function
 	worker := func() {
 		defer workerWg.Done()
 		for task := range tasks {
-			if ctx.Err() != nil {
-				logger.Debug("worker canceled", zap.String("path", task.path))
-				tasksWg.Done()
-				continue
-			}
-			if err := walkFn(task.path, task.info, task.err); err != nil {
-				// Do not collect SkipDir errors.
-				if !errors.Is(err, filepath.SkipDir) {
-					errLock.Lock()
-					walkErrors = append(walkErrors, fmt.Errorf("path %q: %w", task.path, err))
-					errLock.Unlock()
-				}
+			ret := walkFn(task.path, task.info, task.err)
+			if ret != nil {
+				errLock.Lock()
+				walkErrors = append(walkErrors, fmt.Errorf("path %q: %w", task.path, ret))
+				errLock.Unlock()
 			}
 			tasksWg.Done()
 		}
@@ -702,48 +696,160 @@ func walkLimitWithSymlinkHandling(ctx context.Context, root string, walkFn filep
 		go worker()
 	}
 
-	// Create godirwalk.Options with the callback function.
-	options := &godirwalk.Options{
-		Callback: func(path string, info *godirwalk.Dirent) error {
-			if ctx.Err() != nil {
-				logger.Warn("walk canceled", zap.String("path", path))
+	// Track visited paths to avoid cycles when following symlinks
+	var visitedPaths sync.Map
+
+	// Use filepath.WalkDir with custom symlink handling
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if ctx.Err() != nil {
+			logger.Warn("walk canceled", zap.String("path", path))
+			return context.Canceled
+		}
+
+		// Get file info
+		fileInfo, err := d.Info()
+		if err != nil {
+			return err
+		}
+
+		// Handle symlinks based on the symlink handling mode
+		if fileInfo.Mode()&os.ModeSymlink != 0 {
+			switch symlinkHandling {
+			case SymlinkIgnore:
+				// Skip symlinks
+				return nil
+			case SymlinkReport:
+				// Process symlinks as regular files/dirs without following
+				// No special handling needed
+			case SymlinkFollow:
+				// Follow symlinks
+				target, err := os.Readlink(path)
+				if err != nil {
+					return err
+				}
+
+				// Make the target path absolute if it's not already
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(filepath.Dir(path), target)
+				}
+
+				// Check for cycles
+				if _, visited := visitedPaths.Load(target); visited {
+					// Skip this symlink to avoid cycles
+					return nil
+				}
+
+				// Mark this path as visited
+				visitedPaths.Store(target, true)
+
+				// Get info about the target
+				targetInfo, err := os.Stat(target)
+				if err != nil {
+					return err
+				}
+
+				// If the target is a directory, walk it
+				if targetInfo.IsDir() {
+					// Process the directory itself
+					ret := walkFn(path, targetInfo, nil)
+					if errors.Is(ret, filepath.SkipDir) {
+						return filepath.SkipDir
+					}
+					if ret != nil {
+						errLock.Lock()
+						walkErrors = append(walkErrors, fmt.Errorf("path %q: %w", path, ret))
+						errLock.Unlock()
+					}
+
+					// Walk the target directory
+					return filepath.WalkDir(target, func(targetPath string, targetD fs.DirEntry, targetErr error) error {
+						if targetErr != nil {
+							return targetErr
+						}
+
+						// Skip the root of the target directory as we've already processed it
+						if targetPath == target {
+							return nil
+						}
+
+						// Get file info for the target
+						targetFileInfo, err := targetD.Info()
+						if err != nil {
+							return err
+						}
+
+						// Create a virtual path that preserves the original symlink path
+						relPath, err := filepath.Rel(target, targetPath)
+						if err != nil {
+							return err
+						}
+						virtualPath := filepath.Join(path, relPath)
+
+						// Process the file/directory
+						if targetFileInfo.IsDir() {
+							ret := walkFn(virtualPath, targetFileInfo, nil)
+							if errors.Is(ret, filepath.SkipDir) {
+								return filepath.SkipDir
+							}
+							if ret != nil {
+								errLock.Lock()
+								walkErrors = append(walkErrors, fmt.Errorf("path %q: %w", virtualPath, ret))
+								errLock.Unlock()
+							}
+						} else {
+							// For files, send the task to workers
+							tasksWg.Add(1)
+							select {
+							case <-ctx.Done():
+								tasksWg.Done()
+								return context.Canceled
+							case tasks <- walkArgs{path: virtualPath, info: targetFileInfo, err: nil}:
+							}
+						}
+						return nil
+					})
+				} else {
+					// For files, send the task to workers
+					tasksWg.Add(1)
+					select {
+					case <-ctx.Done():
+						tasksWg.Done()
+						return context.Canceled
+					case tasks <- walkArgs{path: path, info: targetInfo, err: nil}:
+					}
+					return nil
+				}
+			}
+		}
+
+		// For directories, process synchronously so that SkipDir is honored.
+		if fileInfo.IsDir() {
+			ret := walkFn(path, fileInfo, nil)
+			if errors.Is(ret, filepath.SkipDir) {
+				return filepath.SkipDir
+			}
+			if ret != nil {
+				errLock.Lock()
+				walkErrors = append(walkErrors, fmt.Errorf("path %q: %w", path, ret))
+				errLock.Unlock()
+			}
+		} else {
+			// For files, send the task to workers.
+			tasksWg.Add(1)
+			select {
+			case <-ctx.Done():
+				tasksWg.Done()
 				return context.Canceled
+			case tasks <- walkArgs{path: path, info: fileInfo, err: nil}: // Pass fileInfo
 			}
-			// Convert godirwalk.Dirent to os.FileInfo
-			fileInfo, err := os.Lstat(path)
-			if err != nil {
-				return err
-			}
+		}
+		return nil
+	})
 
-			// For directories, process synchronously so that SkipDir is honored.
-			if fileInfo.IsDir() {
-				ret := walkFn(path, fileInfo, nil)
-				if errors.Is(ret, filepath.SkipDir) {
-					return filepath.SkipDir
-				}
-				if ret != nil {
-					errLock.Lock()
-					walkErrors = append(walkErrors, fmt.Errorf("path %q: %w", path, ret))
-					errLock.Unlock()
-				}
-			} else {
-				// For files, send the task to workers.
-				tasksWg.Add(1)
-				select {
-				case <-ctx.Done():
-					tasksWg.Done()
-					return context.Canceled
-				case tasks <- walkArgs{path: path, info: fileInfo, err: nil}: // Pass fileInfo
-				}
-			}
-			return nil
-		},
-		// Set FollowSymbolicLinks based on the SymlinkHandling option
-		FollowSymbolicLinks: symlinkHandling == SymlinkFollow,
-	}
-
-	// Use godirwalk.Walk with the options.
-	err := godirwalk.Walk(root, options)
 	if err != nil && !errors.Is(err, filepath.SkipDir) {
 		errLock.Lock()
 		walkErrors = append(walkErrors, err)
@@ -756,28 +862,19 @@ func walkLimitWithSymlinkHandling(ctx context.Context, root string, walkFn filep
 	// Collect errors.
 	if len(walkErrors) > 0 {
 		// If there's only one error and it's context.Canceled, return it directly
-		if len(walkErrors) == 1 && (errors.Is(walkErrors[0], context.Canceled) ||
-			walkErrors[0].Error() == "context canceled") {
+		if len(walkErrors) == 1 && errors.Is(walkErrors[0], context.Canceled) {
 			return context.Canceled
 		}
 
-		// Check if all errors are the same custom error
-		if len(walkErrors) > 0 {
-			firstErr := walkErrors[0]
-			allSame := true
-			for _, err := range walkErrors[1:] {
-				if !errors.Is(err, firstErr) && err.Error() != firstErr.Error() {
-					allSame = false
-					break
-				}
-			}
-			if allSame {
-				return firstErr
-			}
+		// Otherwise, create a combined error
+		var errMsg strings.Builder
+		errMsg.WriteString(fmt.Sprintf("%d errors occurred during walk:\n", len(walkErrors)))
+		for i, err := range walkErrors {
+			errMsg.WriteString(fmt.Sprintf("  %d: %v\n", i+1, err))
 		}
-
-		return fmt.Errorf("multiple errors: %v", walkErrors)
+		return errors.New(errMsg.String())
 	}
+
 	return nil
 }
 
