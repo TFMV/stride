@@ -52,7 +52,8 @@ Example:
 	},
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		// Set default excluded directories if none specified
-		if cmd.Flags().Lookup("exclude-dir").Value.String() == "" {
+		excludeDirFlag := cmd.PersistentFlags().Lookup("exclude-dir")
+		if excludeDirFlag != nil && excludeDirFlag.Value.String() == "" {
 			// Common system directories that often have permission issues
 			defaultExcludes := []string{
 				".Trash",
@@ -63,7 +64,7 @@ Example:
 				"$RECYCLE.BIN",
 				"lost+found",
 			}
-			cmd.Flags().Set("exclude-dir", strings.Join(defaultExcludes, ","))
+			cmd.PersistentFlags().Set("exclude-dir", strings.Join(defaultExcludes, ","))
 		}
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -88,7 +89,7 @@ func init() {
 	rootCmd.Flags().String("min-size", "", "Minimum file size to process")
 	rootCmd.Flags().String("max-size", "", "Maximum file size to process")
 	rootCmd.Flags().String("pattern", "", "File pattern to match")
-	rootCmd.Flags().String("exclude-dir", "", "Directories to exclude (comma-separated)")
+	rootCmd.PersistentFlags().String("exclude-dir", "", "Directories to exclude (comma-separated)")
 	rootCmd.Flags().String("exclude-pattern", "", "Patterns to exclude files (comma-separated)")
 	rootCmd.Flags().String("file-types", "", "File types to include (comma-separated: file,dir,symlink,pipe,socket,device,char)")
 	rootCmd.Flags().Bool("follow-symlinks", false, "Follow symbolic links")
@@ -120,7 +121,7 @@ func init() {
 	viper.BindPFlag("min-size", rootCmd.Flags().Lookup("min-size"))
 	viper.BindPFlag("max-size", rootCmd.Flags().Lookup("max-size"))
 	viper.BindPFlag("pattern", rootCmd.Flags().Lookup("pattern"))
-	viper.BindPFlag("exclude-dir", rootCmd.Flags().Lookup("exclude-dir"))
+	viper.BindPFlag("exclude-dir", rootCmd.PersistentFlags().Lookup("exclude-dir"))
 	viper.BindPFlag("exclude-pattern", rootCmd.Flags().Lookup("exclude-pattern"))
 	viper.BindPFlag("file-types", rootCmd.Flags().Lookup("file-types"))
 	viper.BindPFlag("follow-symlinks", rootCmd.Flags().Lookup("follow-symlinks"))

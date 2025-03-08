@@ -16,6 +16,7 @@ Stride is a high-performance, concurrent filesystem traversal and search library
 - Memory Constraints – Define soft and hard memory limits to prevent excessive resource usage.
 - Context Support – Gracefully cancel operations using Go's context.Context.
 - Custom Execution – Run shell commands for matching files (like find -exec).
+- Filesystem Watching – Monitor directories for changes and react to events in real-time.
 
 ## Installation
 
@@ -57,6 +58,25 @@ err := walk.Find(ctx, rootDir, opts, func(ctx context.Context, result walk.FindR
 })
 ```
 
+### Watch
+
+```go
+opts := walk.WatchOptions{
+    Recursive: true,
+    Events:    []walk.WatchEvent{walk.EventCreate, walk.EventModify},
+    Pattern:   "*.go",
+}
+
+// Watch for changes and process them
+err := walk.Watch(ctx, watchDir, opts, func(ctx context.Context, result walk.WatchResult) error {
+    if result.Error != nil {
+        return result.Error
+    }
+    fmt.Printf("Event: %s, File: %s\n", result.Message.Event, result.Message.Path)
+    return nil
+})
+```
+
 ## Key Components
 
 ### Walk API
@@ -77,6 +97,14 @@ The library includes find capabilities:
 - `FindWithExec()` - Execute commands for matched files
 - `FindWithFormat()` - Format output for matched files
 
+### Watch API
+
+The library provides filesystem monitoring capabilities:
+
+- `Watch()` - Monitor directories for changes
+- `WatchWithExec()` - Execute commands when files change
+- `WatchWithFormat()` - Format output for file change events
+
 ### Command Line Tool
 
 Stride includes a CLI tool for quick filesystem traversal:
@@ -92,6 +120,9 @@ stride /path/to/directory
 
 # Basic find usage
 stride find /path/to/search --name="*.go"
+
+# Basic watch usage
+stride watch /path/to/watch --recursive --pattern="*.go"
 ```
 
 ## Performance
