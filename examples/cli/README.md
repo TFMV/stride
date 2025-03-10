@@ -179,7 +179,7 @@ stride watch --include-hidden /path/to/watch
 
 The following placeholders can be used in `--format` and `--exec` options:
 
-```
+```bash
 {}        - Full path to the file
 {base}    - Base name of the file
 {dir}     - Directory containing the file

@@ -17,7 +17,7 @@ The following benchmarks were run on an Apple M2 Pro processor:
 | BenchmarkFindWithExec | 195 | 5,544,289 | 1,081,509 | 1,280 |
 | BenchmarkFindWithFormat | 1,750 | 668,264 | 981,943 | 523 |
 
-### Analysis
+### Find Analysis
 
 1. **Basic Find Performance**
    - The basic find operation processes 1000 files in approximately 634 microseconds.
